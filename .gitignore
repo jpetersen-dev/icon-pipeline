@@ -1,0 +1,21 @@
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary / generated files
+*_bn.png
+*.bmp
+
+# Node (svgo via actions)
+node_modules/
+
+# Logs
+*.log
+
+# GitHub Actions temp
+.env
+.env.*
