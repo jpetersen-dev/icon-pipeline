@@ -4,21 +4,15 @@ on:
   push:
     paths:
       - 'input/png/**'
-  workflow_dispatch:
-    inputs:
-      run_web_optimization:
-        description: '¿Generar versión optimizada para Web?'
-        required: true
-        type: boolean
-        default: false
+  workflow_dispatch: # Activa el botón de ejecución manual
 
 jobs:
-  process-icons:
+  process:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install dependencies
@@ -27,22 +21,21 @@ jobs:
           sudo apt-get install -y imagemagick potrace
           npm install -g svgo
 
-      - name: Vectorize for Design (Always)
+      # VECTORIZACIÓN: Se ejecuta siempre (al subir archivos o manualmente)
+      - name: Vectorize (Design)
         run: bash scripts/vectorize_png_to_svg.sh
 
-      - name: Optimize for Web (Optional)
-        # Se ejecuta si es un push automático O si activaste el checkbox manualmente
-        if: |
-          github.event_name == 'push' || 
-          github.event.inputs.run_web_optimization == 'true'
+      # OPTIMIZACIÓN WEB: SOLO se ejecuta si presionas el botón manualmente
+      - name: Optimize (Web)
+        if: github.event_name == 'workflow_dispatch'
         run: bash scripts/optimize_svg_for_web.sh
 
-      - name: Commit and Push results
+      - name: Commit results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
           git add output/
           if ! git diff --cached --quiet; then
-            git commit -m "chore: update icons [skip ci]"
+            git commit -m "chore: sync icons [skip ci]"
             git push
           fi
