@@ -1,0 +1,48 @@
+name: Icon Pipeline
+
+on:
+  push:
+    paths:
+      - 'input/png/**'
+  workflow_dispatch:
+    inputs:
+      run_web_optimization:
+        description: '¿Generar versión optimizada para Web?'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  process-icons:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick potrace
+          npm install -g svgo
+
+      - name: Vectorize for Design (Always)
+        run: bash scripts/vectorize_png_to_svg.sh
+
+      - name: Optimize for Web (Optional)
+        # Se ejecuta si es un push automático O si activaste el checkbox manualmente
+        if: |
+          github.event_name == 'push' || 
+          github.event.inputs.run_web_optimization == 'true'
+        run: bash scripts/optimize_svg_for_web.sh
+
+      - name: Commit and Push results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Bot"
+          git add output/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update icons [skip ci]"
+            git push
+          fi
