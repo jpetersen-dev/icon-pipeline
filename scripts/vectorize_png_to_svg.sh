@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Detectar comando de ImageMagick (magick o convert)
+# Detectar comando de ImageMagick
 if command -v magick >/dev/null 2>&1; then
   IMG_TOOL="magick"
 elif command -v convert >/dev/null 2>&1; then
@@ -18,20 +18,30 @@ for img in input/png/*.png; do
   name=$(basename "$img" .png)
   target="output/design/${name}.svg"
 
-  # EFICIENCIA: Solo procesar si el SVG no existe
+  # Solo procesar si no existe el SVG
   if [ -f "$target" ]; then
     echo "Saltando $name: Ya existe en design."
     continue
   fi
 
-  echo "Vectorizando: $name..."
+  echo "Procesando con pipeline refinado: $name..."
 
+  # Aplicando tus parámetros de éxito local
   $IMG_TOOL "$img" \
-    -alpha set -fuzz 15% -fill none -draw "color 0,0 floodfill" \
-    -colorspace Gray -threshold 50% -morphology Dilate Diamond:1 \
+    -alpha set \
+    -fuzz 18% \
+    -fill none \
+    -draw "alpha 0,0 floodfill" \
+    -colorspace Gray \
+    -auto-level \
+    -threshold 55% \
+    -morphology Close Disk:1 \
     "${name}_bn.png"
 
   $IMG_TOOL "${name}_bn.png" "${name}.bmp"
+  
+  # Potrace convierte el BMP (negro sobre transparente/blanco) en trazado puro
   potrace "${name}.bmp" -s -o "$target"
+  
   rm "${name}_bn.png" "${name}.bmp"
 done
