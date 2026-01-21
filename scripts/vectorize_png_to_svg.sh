@@ -15,6 +15,7 @@ fi
 
 mkdir -p output/design
 
+# Soporte multiformato
 for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   [ -e "$img" ] || continue
   
@@ -23,25 +24,30 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   target="output/design/${name}.svg"
 
   # CONFIGURACIÓN DE GROSOR
-  # Por defecto usamos Close para limpiar píxeles fantasmas
   MORPH_OP="Close Disk:1"
-  
-  # Si el nombre contiene "_thick", aplicamos Dilatación para engrosar las líneas
   if [[ "$name" == *"_thick"* ]]; then
     echo "Aplicando engrosamiento de líneas para: $filename"
-    # 'Dilate' expande las áreas negras. Prueba con Disk:1.5 o Disk:2 para más grosor.
-    MORPH_OP="Dilate Disk:3"
+    MORPH_OP="Dilate Disk:1.5"
   fi
 
   echo "Procesando $filename -> $target"
 
+  # PASO CRÍTICO: Usamos fondo blanco en lugar de 'none' para que potrace "vea" las líneas
   $IMG_TOOL "$img" \
-    -alpha set -fuzz 18% -fill none -draw "$ALPHA_KEY 0,0 floodfill" \
-    -colorspace Gray -auto-level -threshold 55% \
-    -morphology $MORPH_OP "${name}_bn.png"
+    -fuzz 18% \
+    -fill white -draw "color 0,0 floodfill" \
+    -colorspace Gray \
+    -auto-level \
+    -threshold 55% \
+    -morphology $MORPH_OP \
+    "${name}_bn.png"
 
-  $IMG_TOOL "${name}_bn.png" "${name}.bmp"
+  # Forzamos fondo blanco al convertir a BMP para evitar el error de transparencia
+  $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
+  
+  # Potrace genera el SVG (el fondo blanco desaparece, solo queda el trazado negro)
   potrace "${name}.bmp" -s -o "$target"
   
+  # Limpieza
   rm "${name}_bn.png" "${name}.bmp" "$img" 
 done
