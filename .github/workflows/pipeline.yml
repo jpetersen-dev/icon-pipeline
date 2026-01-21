@@ -3,8 +3,12 @@ name: Icon Pipeline
 on:
   push:
     paths:
-      - 'input/png/**'
-  workflow_dispatch: # Activa el botón de ejecución manual
+      # Ahora se activa con cualquier formato de imagen soportado
+      - 'input/png/**.png'
+      - 'input/png/**.jpg'
+      - 'input/png/**.jpeg'
+      - 'input/png/**.eps'
+  workflow_dispatch:
 
 jobs:
   process:
@@ -18,14 +22,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick potrace
+          # Añadimos ghostscript para soporte de EPS
+          sudo apt-get install -y imagemagick potrace ghostscript
           npm install -g svgo
 
-      # VECTORIZACIÓN: Se ejecuta siempre (al subir archivos o manualmente)
-      - name: Vectorize (Design)
+      - name: Run Vectorization
         run: bash scripts/vectorize_png_to_svg.sh
 
-      # OPTIMIZACIÓN WEB: SOLO se ejecuta si presionas el botón manualmente
       - name: Optimize (Web)
         if: github.event_name == 'workflow_dispatch'
         run: bash scripts/optimize_svg_for_web.sh
@@ -34,8 +37,9 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
-          git add output/
+          # Agregamos todo (.) para detectar los borrados de los originales
+          git add .
           if ! git diff --cached --quiet; then
-            git commit -m "chore: sync icons [skip ci]"
+            git commit -m "chore: vectorizar y limpiar originales [skip ci]"
             git push
           fi
