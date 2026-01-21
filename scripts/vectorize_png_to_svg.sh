@@ -15,7 +15,6 @@ fi
 
 mkdir -p output/design
 
-# Soporte multiformato
 for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   [ -e "$img" ] || continue
   
@@ -24,15 +23,18 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   target="output/design/${name}.svg"
 
   # CONFIGURACIÓN DE GROSOR
+  # Por defecto: Close elimina ruido sin cambiar el grosor significativamente
   MORPH_OP="Close Disk:1"
+  
   if [[ "$name" == *"_thick"* ]]; then
-    echo "Aplicando engrosamiento de líneas para: $filename"
-    MORPH_OP="Dilate Disk:1.5"
+    echo "Engrosando líneas para: $filename"
+    # Erode expande el negro. Prueba Disk:2 o Disk:3 si lo quieres aún más grueso.
+    MORPH_OP="Erode Disk:2"
   fi
 
   echo "Procesando $filename -> $target"
 
-  # PASO CRÍTICO: Usamos fondo blanco en lugar de 'none' para que potrace "vea" las líneas
+  # Pipeline con corrección de fondo blanco y engrosamiento
   $IMG_TOOL "$img" \
     -fuzz 18% \
     -fill white -draw "color 0,0 floodfill" \
@@ -42,12 +44,10 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
     -morphology $MORPH_OP \
     "${name}_bn.png"
 
-  # Forzamos fondo blanco al convertir a BMP para evitar el error de transparencia
+  # Aseguramos que el BMP sea puro negro/blanco para potrace
   $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
   
-  # Potrace genera el SVG (el fondo blanco desaparece, solo queda el trazado negro)
   potrace "${name}.bmp" -s -o "$target"
   
-  # Limpieza
   rm "${name}_bn.png" "${name}.bmp" "$img" 
 done
