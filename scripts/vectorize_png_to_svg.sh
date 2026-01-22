@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# --- 1. CONFIGURACIÓN DE HERRAMIENTAS ---
+# --- 1. DETECCIÓN DE HERRAMIENTAS ---
 if command -v magick >/dev/null 2>&1; then
   IMG_TOOL="magick"
   IDENTIFY_TOOL="magick identify"
@@ -9,7 +9,6 @@ elif command -v convert >/dev/null 2>&1; then
   IMG_TOOL="convert"
   IDENTIFY_TOOL="identify"
 else
-  echo "Error: ImageMagick no instalado." >&2
   exit 1
 fi
 
@@ -21,53 +20,37 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   filename=$(basename -- "$img")
   name="${filename%.*}"
   
-  echo "------------------------------------------------"
-  echo "Procesando con Detección de Color: $filename"
-
-  # Obtener dimensiones
+  # Obtener dimensiones para el centro exacto
   DIMENSIONS=$($IDENTIFY_TOOL -format "%w %h" "$img")
   WIDTH=$(echo $DIMENSIONS | cut -d' ' -f1)
   HEIGHT=$(echo $DIMENSIONS | cut -d' ' -f2)
   CENTER_X=$((WIDTH / 2))
   CENTER_Y=$((HEIGHT / 2))
 
-  # --- MODO A: CONSERVAR COLOR (_color) ---
+  # --- MODO COLOR: MANTENER MADERA Y QUITAR FONDO/HUECOS ---
   if [[ "$name" == *"_color"* ]]; then
+    echo "Procesando madera con transparencia directa: $filename"
     target_png="output/design/${name}_transparent.png"
     
-    # 1. DETECTAR COLOR DE FONDO (Esquina 0,0)
+    # 1. Detectar el color exacto del fondo en la esquina
     BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
-    echo "Color de fondo detectado: $BG_COLOR"
 
-    # 2. CREAR MÁSCARA BASADA EN ESE COLOR
-    # Usamos un fuzz del 30% para atrapar sombras grises del fondo.
-    # El resultado es un mapa donde la madera es BLANCA y el fondo NEGRO.
+    # 2. PROCESO DE TRANSPARENCIA:
+    # -fuzz 25%: Tolerancia para atrapar sombras grises claras.
+    # -draw 'color...floodfill': Agujerea el fondo y el centro.
+    # -shave 1x1: Elimina el posible borde de 1px que deja la IA.
+    # -trim: Ajusta el archivo final al tamaño real del marco.
     $IMG_TOOL "$img" \
-      -fuzz 30% \
-      -transparent "$BG_COLOR" \
-      -alpha extract \
-      -threshold 0 \
-      -negate \
-      -morphology Close Disk:2 \
-      "${name}_mask.png"
-
-    # 3. PERFORAR EL HUECO CENTRAL EN LA MÁSCARA
-    # Buscamos el color en el centro para perforarlo
-    $IMG_TOOL "${name}_mask.png" \
-      -fill black -draw "color $CENTER_X,$CENTER_Y floodfill" \
-      "${name}_mask_final.png"
-
-    # 4. APLICAR MÁSCARA A LA IMAGEN ORIGINAL
-    # Usamos 'CopyOpacity' para que la máscara dicte qué es transparente.
-    # '-trim' elimina los bordes vacíos automáticamente.
-    $IMG_TOOL "$img" "${name}_mask_final.png" \
-      -alpha off -compose CopyOpacity -composite \
-      -trim +repage \
+      -alpha set \
+      -fuzz 25% \
+      -fill none -draw "color 0,0 floodfill" \
+      -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" \
+      -shave 1x1 -trim +repage \
       "$target_png"
     
-    echo "Recorte finalizado: $target_png"
+    echo "PNG de madera listo: $target_png"
 
-  # --- MODO B: VECTORIZACIÓN ESTÁNDAR ---
+  # --- MODO VECTOR: PARA ICONOS Y MARCOS DE UN SOLO COLOR ---
   else
     target_svg="output/design/${name}.svg"
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
@@ -81,6 +64,5 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
     fi
   fi
 
-  # Limpieza
-  rm -f "${name}_mask.png" "${name}_mask_final.png" "${name}_bn.png" "${name}.bmp" "$img"
+  rm -f "${name}_bn.png" "${name}.bmp" "$img"
 done
