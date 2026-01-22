@@ -20,37 +20,39 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   filename=$(basename -- "$img")
   name="${filename%.*}"
   
-  # Obtener dimensiones para el centro exacto
   DIMENSIONS=$($IDENTIFY_TOOL -format "%w %h" "$img")
   WIDTH=$(echo $DIMENSIONS | cut -d' ' -f1)
   HEIGHT=$(echo $DIMENSIONS | cut -d' ' -f2)
   CENTER_X=$((WIDTH / 2))
   CENTER_Y=$((HEIGHT / 2))
 
-  # --- MODO COLOR: MANTENER MADERA Y QUITAR FONDO/HUECOS ---
+  # --- MODO COLOR: LIMPIEZA DE "ISLAS" BLANCAS ---
   if [[ "$name" == *"_color"* ]]; then
-    echo "Procesando madera con transparencia directa: $filename"
+    echo "Refinando transparencia y eliminando islas: $filename"
     target_png="output/design/${name}_transparent.png"
     
-    # 1. Detectar el color exacto del fondo en la esquina
+    # Detectar el color exacto del fondo
     BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
 
-    # 2. PROCESO DE TRANSPARENCIA:
-    # -fuzz 25%: Tolerancia para atrapar sombras grises claras.
-    # -draw 'color...floodfill': Agujerea el fondo y el centro.
-    # -shave 1x1: Elimina el posible borde de 1px que deja la IA.
-    # -trim: Ajusta el archivo final al tamaño real del marco.
+    # EXPLICACIÓN DEL REFINAMIENTO:
+    # 1. '-fuzz 20% floodfill': Perfora las áreas grandes conectadas al fondo y centro.
+    # 2. '-fuzz 10% -transparent white': Esta es la clave. Busca cualquier pixel "casi blanco" 
+    #    que haya quedado aislado (islas) y lo vuelve transparente.
+    # 3. '-channel A -morphology Erode Disk:1.2': Suaviza los bordes internos de los huecos 
+    #    para que no queden rastros de "caspa" blanca.
     $IMG_TOOL "$img" \
       -alpha set \
-      -fuzz 25% \
-      -fill none -draw "color 0,0 floodfill" \
-      -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" \
+      -fuzz 20% -fill none -draw "color 0,0 floodfill" \
+      -fuzz 20% -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" \
+      -fuzz 10% -transparent white \
+      -fuzz 10% -transparent "$BG_COLOR" \
+      -channel A -morphology Erode Disk:1.2 +channel \
       -shave 1x1 -trim +repage \
       "$target_png"
     
-    echo "PNG de madera listo: $target_png"
+    echo "Imagen refinada lista: $target_png"
 
-  # --- MODO VECTOR: PARA ICONOS Y MARCOS DE UN SOLO COLOR ---
+  # --- MODO VECTOR (Standard) ---
   else
     target_svg="output/design/${name}.svg"
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
