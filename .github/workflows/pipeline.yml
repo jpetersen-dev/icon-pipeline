@@ -3,11 +3,9 @@ name: Icon Pipeline
 on:
   push:
     paths:
-      # Ahora se activa con cualquier formato de imagen soportado
-      - 'input/png/**.png'
-      - 'input/png/**.jpg'
-      - 'input/png/**.jpeg'
-      - 'input/png/**.eps'
+      - 'input/png/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -15,31 +13,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Añadimos ghostscript para soporte de EPS
-          sudo apt-get install -y imagemagick potrace ghostscript
+          # Instalamos imagemagick, potrace, ghostscript (para EPS) y librsvg (para PDF)
+          sudo apt-get install -y imagemagick potrace ghostscript librsvg2-bin
+          # SVGO para la optimización web opcional
           npm install -g svgo
 
-      - name: Run Vectorization
+      - name: Run Vectorization Script
         run: bash scripts/vectorize_png_to_svg.sh
 
-      - name: Optimize (Web)
+      - name: Optimize for Web (Manual only)
         if: github.event_name == 'workflow_dispatch'
         run: bash scripts/optimize_svg_for_web.sh
 
-      - name: Commit results
+      - name: Commit and Push results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
-          # Agregamos todo (.) para detectar los borrados de los originales
+          # 'git add .' detecta tanto los nuevos SVGs como la eliminación de los originales
           git add .
           if ! git diff --cached --quiet; then
-            git commit -m "chore: vectorizar y limpiar originales [skip ci]"
+            git commit -m "chore: procesar iconos, generar marcos y limpiar originales [skip ci]"
             git push
+          else
+            echo "No hay cambios para subir."
           fi
