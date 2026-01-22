@@ -4,22 +4,18 @@ set -e
 # --- 1. DETECCIÓN DE HERRAMIENTAS ---
 if command -v magick >/dev/null 2>&1; then
   IMG_TOOL="magick"
-  ALPHA_KEY="alpha"
   IDENTIFY_TOOL="magick identify"
 elif command -v convert >/dev/null 2>&1; then
   IMG_TOOL="convert"
-  ALPHA_KEY="matte"
   IDENTIFY_TOOL="identify"
 else
   echo "Error: ImageMagick no está instalado." >&2
   exit 1
 fi
 
-# Asegurar que existe la carpeta de salida
 mkdir -p output/design
 
-# --- 2. PROCESAMIENTO POR LOTES ---
-# Busca png, jpg, jpeg y eps (sin importar mayúsculas)
+# --- 2. PROCESAMIENTO ---
 for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   [ -e "$img" ] || continue
   
@@ -28,59 +24,57 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   target="output/design/${name}.svg"
 
   echo "------------------------------------------------"
-  echo "Analizando: $filename"
+  echo "Procesando: $filename"
 
-  # --- LÓGICA DE GROSOR (_thick) ---
-  MORPH_OP="Close Disk:1" # Limpieza estándar
-  if [[ "$name" == *"_thick"* ]]; then
-    echo "[MODO] Engrosamiento detectado (Erode)."
-    MORPH_OP="Erode Disk:2"
-  fi
+  # Creamos un Array para los comandos de ImageMagick
+  # Esto evita errores de espacios y comillas
+  IM_ARGS=(-fuzz 18% -fill none)
 
-  # --- LÓGICA DE AGUJERO/MARCO (_hole) ---
-  # Transparencia inicial en la esquina superior izquierda (0,0)
-  DRAW_COMMANDS="-draw \"$ALPHA_KEY 0,0 floodfill\""
-  
+  # A) Siempre quitamos el fondo exterior (esquina 0,0)
+  IM_ARGS+=(-draw "color 0,0 floodfill")
+
+  # B) Lógica de Agujero Central (_hole)
   if [[ "$name" == *"_hole"* ]]; then
-    echo "[MODO] Creación de agujero central para Canva."
-    # Obtener dimensiones y calcular el centro exacto
+    echo "[MODO] Agujero central detectado."
     DIMENSIONS=$($IDENTIFY_TOOL -format "%w %h" "$img")
     WIDTH=$(echo $DIMENSIONS | cut -d' ' -f1)
     HEIGHT=$(echo $DIMENSIONS | cut -d' ' -f2)
     CENTER_X=$((WIDTH / 2))
     CENTER_Y=$((HEIGHT / 2))
     
-    # Añadir segundo clic de transparencia en el centro
-    DRAW_COMMANDS="$DRAW_COMMANDS -fill white -draw \"$ALPHA_KEY $CENTER_X,$CENTER_Y floodfill\""
+    # Añadimos el segundo clic en el centro
+    IM_ARGS+=(-draw "color $CENTER_X,$CENTER_Y floodfill")
   fi
 
-  # --- 3. PIPELINE DE IMAGEMAGICK ---
-  # Convertimos a blanco y negro, aplicamos morfología y preparamos para potrace
+  # C) Lógica de Grosor (_thick)
+  MORPH_OP="Close Disk:1"
+  if [[ "$name" == *"_thick"* ]]; then
+    echo "[MODO] Engrosamiento detectado."
+    MORPH_OP="Erode Disk:2"
+  fi
+
+  # --- 3. EJECUCIÓN ---
+  # Aplicamos el procesamiento de imagen
+  # Usamos "${IM_ARGS[@]}" para que Bash pase los argumentos exactamente como los definimos
   $IMG_TOOL "$img" \
-    -fuzz 18% \
-    -fill white $DRAW_COMMANDS \
+    "${IM_ARGS[@]}" \
     -colorspace Gray \
     -auto-level \
     -threshold 55% \
     -morphology $MORPH_OP \
     "${name}_bn.png"
 
-  # Crear BMP temporal (limpio de transparencia para potrace)
+  # Convertir a BMP para Potrace (asegurando fondo blanco)
   $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
   
-  # --- 4. VECTORIZACIÓN ---
-  # Generar el SVG (Potrace crea el trazado vectorial)
+  # Generar SVG
   potrace "${name}.bmp" -s -o "$target"
 
-  # --- 5. GENERACIÓN DE MARCO NATIVO (PDF) ---
+  # Generar PDF para Canva si es un marco
   if [[ "$name" == *"_hole"* ]]; then
-    echo "Exportando PDF para Canva..."
-    # rsvg-convert transforma el vector en un PDF que Canva reconoce como marco
     rsvg-convert -f pdf -o "output/design/${name}_frame.pdf" "$target"
   fi
   
-  # --- 6. LIMPIEZA FINAL ---
-  # Borra los archivos temporales y el ORIGINAL para ahorrar espacio
+  # Limpieza
   rm "${name}_bn.png" "${name}.bmp" "$img"
-  echo "Completado: $target"
 done
