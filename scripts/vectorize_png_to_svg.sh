@@ -2,21 +2,23 @@
 set -e
 
 # --- 1. DETECCIÓN DE HERRAMIENTAS ---
-# Detectamos si usamos magick (IM7) o convert (IM6) y ajustamos los comandos
 if command -v magick >/dev/null 2>&1; then
   IMG_TOOL="magick"
   IDENTIFY_TOOL="magick identify"
-  # Comandos para IM7
   ALPHA_SET="-alpha set"
   CHANNEL_SELECT="-channel A"
   CHANNEL_RESET="+channel"
+  # Para IM7, el color transparente se define así
+  TRANSPARENT_COLOR="none"
 elif command -v convert >/dev/null 2>&1; then
   IMG_TOOL="convert"
   IDENTIFY_TOOL="identify"
-  # Comandos para IM6 (compatibilidad con GitHub Actions)
+  # Para IM6 (GitHub), usamos matte para el canal alfa
   ALPHA_SET="-matte -channel A"
   CHANNEL_SELECT="-channel A"
   CHANNEL_RESET="+channel"
+  # Para IM6, el color transparente para floodfill es 'none'
+  TRANSPARENT_COLOR="none"
 else
   echo "Error: ImageMagick no instalado." >&2
   exit 1
@@ -33,7 +35,7 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   echo "------------------------------------------------"
   echo "Procesando: $filename"
 
-  # Obtener dimensiones para encontrar el centro
+  # Obtener dimensiones
   DIMENSIONS=$($IDENTIFY_TOOL -format "%w %h" "$img")
   WIDTH=$(echo $DIMENSIONS | cut -d' ' -f1)
   HEIGHT=$(echo $DIMENSIONS | cut -d' ' -f2)
@@ -42,33 +44,31 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
 
   # --- MODO A: MANTENER COLOR Y TEXTURA (_color) ---
   if [[ "$name" == *"_color"* ]]; then
-    echo "[MODO] Conservando texturas y realizando limpieza avanzada de bordes..."
+    echo "[MODO] Conservando texturas con limpieza AGRESIVA..."
     target_png="output/design/${name}_transparent.png"
     
-    # NOTA TÉCNICA:
-    # 1. Creamos la transparencia inicial con floodfill (con un fuzz generoso del 20%).
-    # 2. Usamos '-morphology Erode' sobre el canal Alpha. Esto "raspa" la parte opaca
-    #    de la imagen hacia adentro, eliminando los halos grises y bordes blancos.
-    #    Disk:2.5 es la intensidad del raspado. Auméntalo si aún quedan bordes.
-    # 3. Usamos '-transparent white' al final con un fuzz bajo para eliminar 
-    #    pequeñas áreas blancas desconectadas dentro del diseño de madera.
+    # NOTA TÉCNICA DE LA NUEVA VERSIÓN:
+    # 1. Fuzz inicial alto (25%): Para atrapar más sombras grises en el floodfill.
+    # 2. Erode fuerte (Disk:3.5): Raspamos más los bordes para eliminar halos.
+    # 3. PASO FINAL CRÍTICO: '-fuzz 15% -transparent white'. 
+    #    Esto busca cualquier píxel blanco/gris claro que haya quedado AISLADO
+    #    dentro de los huecos del tallado y lo elimina.
 
     $IMG_TOOL "$img" \
       $ALPHA_SET \
-      -fuzz 20% \
-      -fill none -draw "color 0,0 floodfill" \
-      -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" \
-      $CHANNEL_SELECT -morphology Erode Disk:2.5 $CHANNEL_RESET \
-      -fuzz 10% -transparent white \
+      -fuzz 25% \
+      -fill "$TRANSPARENT_COLOR" -draw "color 0,0 floodfill" \
+      -fill "$TRANSPARENT_COLOR" -draw "color $CENTER_X,$CENTER_Y floodfill" \
+      $CHANNEL_SELECT -morphology Erode Disk:3.5 $CHANNEL_RESET \
+      -fuzz 15% -transparent white \
       "$target_png"
     
     echo "PNG con transparencia limpia creado: $target_png"
 
-  # --- MODO B: VECTORIZACIÓN B&W (Iconos y Marcos vectoriales) ---
+  # --- MODO B: VECTORIZACIÓN B&W ---
   else
     target_svg="output/design/${name}.svg"
     
-    # Configuración estándar para B&W
     IM_ARGS=(-fuzz 18% -fill white -draw "color 0,0 floodfill")
     [[ "$name" == *"_hole"* ]] && IM_ARGS+=(-draw "color $CENTER_X,$CENTER_Y floodfill")
 
@@ -89,6 +89,5 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
     fi
   fi
 
-  # Limpieza
   rm -f "${name}_bn.png" "${name}.bmp" "$img"
 done
