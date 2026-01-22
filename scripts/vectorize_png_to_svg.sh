@@ -22,7 +22,7 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   name="${filename%.*}"
   
   echo "------------------------------------------------"
-  echo "Procesando con Máscara Quirúrgica: $filename"
+  echo "Procesando con Detección de Color: $filename"
 
   # Obtener dimensiones
   DIMENSIONS=$($IDENTIFY_TOOL -format "%w %h" "$img")
@@ -35,30 +35,37 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   if [[ "$name" == *"_color"* ]]; then
     target_png="output/design/${name}_transparent.png"
     
-    # PASO 1: Crear una máscara de contraste extremo
-    # Esto genera un mapa B&W donde la madera es NEGRA y el fondo es BLANCO.
-    # Al usar '-threshold 92%', protegemos las luces de la madera.
+    # 1. DETECTAR COLOR DE FONDO (Esquina 0,0)
+    BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
+    echo "Color de fondo detectado: $BG_COLOR"
+
+    # 2. CREAR MÁSCARA BASADA EN ESE COLOR
+    # Usamos un fuzz del 30% para atrapar sombras grises del fondo.
+    # El resultado es un mapa donde la madera es BLANCA y el fondo NEGRO.
     $IMG_TOOL "$img" \
-      -colorspace Gray \
-      -threshold 92% \
+      -fuzz 30% \
+      -transparent "$BG_COLOR" \
+      -alpha extract \
+      -threshold 0 \
       -negate \
       -morphology Close Disk:2 \
       "${name}_mask.png"
 
-    # PASO 2: Perforar la máscara en el centro y esquinas
+    # 3. PERFORAR EL HUECO CENTRAL EN LA MÁSCARA
+    # Buscamos el color en el centro para perforarlo
     $IMG_TOOL "${name}_mask.png" \
-      -fill black -draw "color 0,0 floodfill" \
       -fill black -draw "color $CENTER_X,$CENTER_Y floodfill" \
       "${name}_mask_final.png"
 
-    # PASO 3: Aplicar la máscara como Canal Alfa a la imagen original
-    # Esto mantiene CADA PÍXEL de color original pero oculta el fondo.
+    # 4. APLICAR MÁSCARA A LA IMAGEN ORIGINAL
+    # Usamos 'CopyOpacity' para que la máscara dicte qué es transparente.
+    # '-trim' elimina los bordes vacíos automáticamente.
     $IMG_TOOL "$img" "${name}_mask_final.png" \
       -alpha off -compose CopyOpacity -composite \
       -trim +repage \
       "$target_png"
     
-    echo "PNG Limpio (Preservando Luces): $target_png"
+    echo "Recorte finalizado: $target_png"
 
   # --- MODO B: VECTORIZACIÓN ESTÁNDAR ---
   else
@@ -74,6 +81,6 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
     fi
   fi
 
-  # Limpieza de temporales
+  # Limpieza
   rm -f "${name}_mask.png" "${name}_mask_final.png" "${name}_bn.png" "${name}.bmp" "$img"
 done
