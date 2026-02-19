@@ -63,67 +63,58 @@ for img in "${FILES[@]}"; do
     target_svg="output/design/${name}.svg"
     generated_svg="$target_svg"
     
-    echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
-
-    echo "    [Debug] Generando mapa binario perfecto..."
-    # 1. Binarizamos igual que en el modo estándar para asegurar blanco/negro puro
+    echo "    [Debug] Generando mapa binario..."
+    # 1. Limpiamos y binarizamos la imagen de entrada
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
-      -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.png"
-    $IMG_TOOL "temp_binary.png" -background white -alpha remove "temp_binary.bmp"
+      -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.bmp"
 
-    echo "    [Debug] Analizando topología de la imagen..."
-    # 2. Guardamos el análisis completo en una variable (eliminamos retornos de carro por seguridad)
+    echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    # 3. Extraemos el ID del FONDO (Buscamos lo que sea blanco: 255 o white)
-    BG_ID=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1, $NF}' | grep -iE "255\)|white|#FFFFFF" | head -n 1 | awk '{print $1}' | sed 's/://')
-    
-    # 4. Extraemos los IDs de las PIEZAS (Buscamos lo que sea negro: 0 o black)
-    OBJECT_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1, $NF}' | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
+    # 2. Extraemos solo los IDs correspondientes a las piezas negras
+    OBJECT_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
 
-    echo "    [Debug] ID del Fondo detectado: '$BG_ID'"
-    echo "    [Debug] IDs de Piezas detectadas: '$OBJECT_IDS'"
+    echo "    [Debug] IDs detectados: $(echo $OBJECT_IDS | tr '\n' ' ')"
 
-    # Si por alguna razón no detecta piezas, hacemos un trazado normal de emergencia
-    if [ -z "$OBJECT_IDS" ]; then
-        echo "    [Error] No se detectaron piezas separadas. Haciendo trazado estándar de emergencia."
-        potrace "temp_binary.bmp" -s -o "temp_emergency.svg"
-        path_d=$(grep -o 'd="[^"]*"' "temp_emergency.svg" | head -n 1)
-        if [ ! -z "$path_d" ]; then
-            echo "  <g class=\"layer\" id=\"layer-emergency\">" >> "$target_svg"
-            echo "    <path $path_d />" >> "$target_svg"
+    # Iniciamos el documento SVG
+    echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
+
+    counter=1
+    for id in $OBJECT_IDS; do
+        echo "    [Debug] Vectorizando capa ID: $id"
+        
+        # 3. AISLAMIENTO INFALIBLE:
+        # Todo lo que no sea $id se vuelve negro (valor 0). El $id retiene su valor gris.
+        # -auto-level fuerza el fondo a negro y nuestra pieza a blanco puro.
+        # -negate invierte los colores para que potrace lea: Pieza Negra en Fondo Blanco.
+        $IMG_TOOL "temp_binary.bmp" \
+          -define connected-components:keep="$id" \
+          -connected-components 4 \
+          -auto-level -negate \
+          "temp_${counter}.bmp"
+          
+        potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
+        
+        # 4. EXTRACCIÓN SEGURA (Multilínea):
+        # En lugar de grep, usamos sed para extraer el bloque <g> completo generado por potrace
+        G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg")
+        
+        if [ ! -z "$G_BLOCK" ]; then
+            echo "  " >> "$target_svg"
+            echo "  <g class=\"layer icon-part-${counter}\">" >> "$target_svg"
+            echo "$G_BLOCK" >> "$target_svg"
             echo "  </g>" >> "$target_svg"
+        else
+            echo "    [Aviso] La pieza $id era demasiado pequeña o inválida."
         fi
-        rm -f "temp_emergency.svg"
-    else
-        counter=1
-        for id in $OBJECT_IDS; do
-            echo "    [Debug] Aislando y vectorizando pieza ID: $id"
-            
-            # PASO CLAVE: Conservamos la pieza actual ($id) Y el fondo ($BG_ID)
-            $IMG_TOOL "temp_binary.bmp" \
-              -define connected-components:keep="${BG_ID},${id}" \
-              -define connected-components:mean-color=true \
-              -connected-components 4 \
-              "temp_${counter}.bmp"
-              
-            potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
-            
-            path_d=$(grep -o 'd="[^"]*"' "temp_${counter}.svg" | head -n 1)
-            
-            if [ ! -z "$path_d" ]; then
-                echo "  <g class=\"layer\" id=\"layer-${counter}\">" >> "$target_svg"
-                echo "    <path $path_d />" >> "$target_svg"
-                echo "  </g>" >> "$target_svg"
-            fi
-            rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
-            ((counter++))
-        done
-    fi
+        
+        rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
+        ((counter++))
+    done
     
     echo "</svg>" >> "$target_svg"
-    rm -f "temp_binary.png" "temp_binary.bmp"
-    
+    rm -f "temp_binary.bmp"
+
     # --- MODO VECTOR (Standard) ---
   else
     echo "  -> Modo Estándar: Vectorización simple..."
