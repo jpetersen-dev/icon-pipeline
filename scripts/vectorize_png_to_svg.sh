@@ -78,7 +78,8 @@ for img in "${FILES[@]}"; do
     if [ -z "$BLACK_IDS_CLEAN" ]; then
          echo "    [Alerta] No se detectaron piezas negras."
     else
-        COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF" "#FF9900" "#3366FF")
+        # TRUCO MAESTRO PARA CANVA: Máximo 5 colores estrictos.
+        COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF")
         color_index=0
         counter=1
 
@@ -106,21 +107,16 @@ for img in "${FILES[@]}"; do
               
             potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
             
-            # --- SOLUCIÓN DE EXTRACCIÓN INFALIBLE ---
-            # 1. Convertimos el archivo temporal en una sola línea gigante cambiando saltos por espacios
             FLAT_SVG=$(tr '\n' ' ' < "temp_${counter}.svg")
             
-            # 2. Ahora la extracción es perfecta porque todo está en la misma línea
             PATH_DATA=$(echo "$FLAT_SVG" | grep -o 'd="[^"]*"' | head -n 1)
             TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -o 'transform="[^"]*"' | head -n 1)
 
-            # 3. Construimos un <path> limpio, sin grupos, con el color inyectado directamente
             if [ ! -z "$PATH_DATA" ]; then
                 echo "  <path id=\"layer-${counter}\" class=\"icon-part\" fill=\"$CURRENT_COLOR\" $TRANSFORM_DATA $PATH_DATA />" >> "$target_svg"
             else
                 echo "    [Aviso] La pieza $id no contenía tinta."
             fi
-            # -------------------------------------
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
             
@@ -132,8 +128,6 @@ for img in "${FILES[@]}"; do
     echo "</svg>" >> "$target_svg"
     rm -f "temp_binary.bmp"
 
-    # --- APLANADO FINAL CON SVGO (Exclusivo para _layers) ---
-    # Esto fusiona matemáticamente las transformaciones dentro del 'path'
     echo "    [Debug] Optimizando y fusionando transformaciones para Canva..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
