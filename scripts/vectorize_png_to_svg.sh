@@ -25,77 +25,102 @@ for img in "${FILES[@]}"; do
   target_svg="output/design/${name}.svg"
 
   # =====================================================================================
-  # MODO CAPAS HYBRIDO (LA SOLUCIÓN DEFINITIVA)
-  # Combina separación geométrica perfecta con agrupación por color real.
+  # MODO CAPAS HYBRIDO (GEOMETRÍA PERFECTA + COLOR REAL)
   # =====================================================================================
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
     echo "  -> Modo Híbrido: Separación geométrica + Agrupación por color real..."
     
-    # 1. PREPARACIÓN DE LA IMAGEN ORIGINAL
-    # Reducimos la imagen a color a una paleta muy estricta (ej. 4 colores) para evitar
-    # que el antialiasing genere miles de tonos de rojo/azul distintos.
-    $IMG_TOOL "$img" +dither -colors 4 "temp_reduced_colors.png"
+    # 1. Preparar una versión de color reducida para que el muestreo sea preciso (sin antialiasing)
+    $IMG_TOOL "$img" -background white -alpha remove +dither -colors 8 "temp_reduced_colors.png"
 
-    # 2. GENERACIÓN DEL MAPA BINARIO (GEOMETRÍA)
-    echo "    [Debug] Creando mapa de siluetas para detectar islas..."
-    $IMG_TOOL "temp_reduced_colors.png" \
-      -fuzz 20% -fill white -draw "color 0,0 floodfill" \
-      -colorspace Gray -threshold 55% -morphology Close Disk:1 \
-      "temp_binary.bmp"
+    # 2. Crear mapa binario (Solo Blanco y Negro puro)
+    echo "    [Debug] Creando mapa de siluetas..."
+    $IMG_TOOL "$img" -background white -alpha remove -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.bmp"
 
-    # 3. DETECCIÓN DE ISLAS (PIEZAS SUELTAS)
-    echo "    [Debug] Analizando topología y separando piezas..."
+    # 3. Detectar todas las islas
+    echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=10 -connected-components 4 null: | tr -d '\r')
     
-    # IDs de todo lo que no sea blanco (fondo)
-    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -ivE "white|#FFFFFF|gray\(255\)" | awk '{print $1}' | sed 's/://')
+    # EL TRUCO INFALIBLE: La línea 2 del log de CC es SIEMPRE la pieza más grande (el fondo). 
+    # Tomamos su ID y lo descartamos automáticamente, sin importar su color.
+    BG_ID=$(echo "$CC_OUTPUT" | tail -n +2 | head -n 1 | awk '{print $1}' | sed 's/://')
+    
+    # Obtenemos solo los IDs de los trazos (ignorando el BG_ID)
+    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{if ($1 != "'"$BG_ID"':" && $1 != "") print $1}' | sed 's/://')
 
     if [ -z "$BLACK_IDS" ]; then
          echo "    [Alerta] No se detectaron piezas para vectorizar."
          echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\"></svg>" > "$target_svg"
     else
         echo "    [Debug] Muestreando color original de cada pieza..."
-        
-        # Array asociativo para agrupar IDs por su código HEX de color real
         declare -A COLOR_GROUPS
         
         for id in $BLACK_IDS; do
-            # Crear máscara de SOLO esta pieza
-            $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$id" -connected-components 4 "temp_mask_$id.bmp"
+            # Aislar esta pieza eliminando TODAS las demás (La técnica que nos dio los huecos transparentes)
+            REMOVE_LIST=""
+            for other_id in $BLACK_IDS; do
+                if [ "$other_id" != "$id" ]; then REMOVE_LIST="$REMOVE_LIST $other_id"; fi
+            done
+            REMOVE_CSV=$(echo $REMOVE_LIST | xargs | tr ' ' ',')
+
+            if [ -z "$REMOVE_CSV" ]; then
+                cp "temp_binary.bmp" "temp_piece_$id.bmp"
+            else
+                $IMG_TOOL "temp_binary.bmp" -define connected-components:remove="${REMOVE_CSV}" -define connected-components:mean-color=true -connected-components 4 "temp_piece_$id.bmp"
+            fi
+
+            # Hacer que el fondo blanco de esta pieza sea transparente
+            $IMG_TOOL "temp_piece_$id.bmp" -transparent white "temp_mask_$id.png"
+
+            # Recortar la imagen original a color usando esta máscara exacta
+            $IMG_TOOL "temp_reduced_colors.png" "temp_mask_$id.png" -compose DstIn -composite "temp_color_$id.png"
+
+            # Encontrar el color predominante del recorte (ignorando el fondo transparente y colores casi blancos)
+            DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#00000000|#FFFFFF|#FDFDFD|#FEFEFE|#F0F0F0' | sort -nr | head -n 1 | grep -oE '#[0-9a-fA-F]{6}' || true)
             
-            # Usar la máscara sobre la imagen de color reducida para encontrar el color predominante
-            # El '|| true' evita que el script muera si grep no encuentra nada.
-            DOMINANT_COLOR=$($IMG_TOOL "temp_reduced_colors.png" "temp_mask_$id.bmp" -alpha off -compose CopyOpacity -composite -format "%c" histogram:info: | grep -ivE 'none|#00000000|#FFFFFF' | sort -nr | head -n 1 | grep -oE '#[0-9a-fA-F]{6}' || true)
+            # Si falla, asignar negro
+            if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
             
-            # Si falla la detección, asignar un gris neutro por defecto para no romper el grupo
-            if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#808080"; fi
+            echo "      - Isla $id -> Color detectado: $DOMINANT_COLOR"
             
             # Agrupar el ID bajo su color detectado
             COLOR_GROUPS["$DOMINANT_COLOR"]="${COLOR_GROUPS["$DOMINANT_COLOR"]} $id"
-            rm -f "temp_mask_$id.bmp"
+            
+            rm -f "temp_piece_$id.bmp" "temp_mask_$id.png" "temp_color_$id.png"
         done
 
-        # 4. VECTORIZACIÓN Y ENSAMBLADO FINAL POR GRUPOS DE COLOR
-        echo "    [Debug] Vectorizando grupos de color..."
+        echo "    [Debug] Vectorizando grupos consolidados de color..."
         echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
         counter=1
         
-        # Iterar sobre los colores HEX únicos encontrados
+        # Iterar sobre cada color real encontrado
         for hex_color in "${!COLOR_GROUPS[@]}"; do
-            # Obtener la lista de IDs que pertenecen a este color
-            ids_to_keep=$(echo ${COLOR_GROUPS[$hex_color]} | xargs | tr ' ' ',')
-            echo "      - Procesando capa color $hex_color (Piezas: $ids_to_keep)"
+            ids_to_keep="${COLOR_GROUPS[$hex_color]}"
             
-            # Crear un mapa binario que contiene SOLO las piezas de este color
-            $IMG_TOOL "temp_binary.bmp" \
-              -define connected-components:keep="$ids_to_keep" \
-              -connected-components 4 \
-              "temp_group_${counter}.bmp"
-              
-            # Vectorizar el grupo. Potrace manejará perfectamente los huecos.
+            # Eliminar todas las piezas que NO pertenezcan a este grupo de color
+            REMOVE_LIST=""
+            for all_id in $BLACK_IDS; do
+                keep_this=0
+                for keep_id in $ids_to_keep; do
+                    if [ "$all_id" == "$keep_id" ]; then keep_this=1; break; fi
+                done
+                if [ "$keep_this" -eq 0 ]; then REMOVE_LIST="$REMOVE_LIST $all_id"; fi
+            done
+            REMOVE_CSV=$(echo $REMOVE_LIST | xargs | tr ' ' ',')
+
+            # Crear el mapa binario final de este grupo
+            if [ -z "$REMOVE_CSV" ]; then
+                cp "temp_binary.bmp" "temp_group_${counter}.bmp"
+            else
+                $IMG_TOOL "temp_binary.bmp" -define connected-components:remove="${REMOVE_CSV}" -define connected-components:mean-color=true -connected-components 4 "temp_group_${counter}.bmp"
+            fi
+            
+            echo "      - Generando trazado para color $hex_color..."
+            
+            # Potrace vectoriza (Huecos garantizados 100% transparentes)
             potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
             
-            # Aplanar y extraer el trazado para Canva
+            # Aplanar para Canva
             FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
             PATH_DATA=$(echo "$FLAT_SVG" | grep -o 'd="[^"]*"' | head -n 1 || true)
             TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -o 'transform="[^"]*"' | head -n 1 || true)
@@ -103,6 +128,7 @@ for img in "${FILES[@]}"; do
             if [ -n "$PATH_DATA" ]; then
                 echo "  <path id=\"layer-color-${counter}\" class=\"icon-part\" fill=\"$hex_color\" $TRANSFORM_DATA $PATH_DATA />" >> "$target_svg"
             fi
+            
             rm -f "temp_group_${counter}.bmp" "temp_group_${counter}.svg"
             counter=$((counter + 1))
         done
@@ -114,14 +140,14 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Optimizando SVG final para Canva..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
-  # --- OTROS MODOS (Para mantener compatibilidad) ---
+  # --- MODO COLOR (Plano) ---
   elif [[ "$name" == *"_color"* ]]; then
-     # (Modo color simple para imágenes planas sin capas)
      target_png="output/design/${name}_transparent.png"
      BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
      $IMG_TOOL "$img" -alpha set -fuzz 20% -fill none -draw "color 0,0 floodfill" -fuzz 20% -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" -fuzz 10% -transparent white -fuzz 10% -transparent "$BG_COLOR" -channel A -morphology Erode Disk:1.2 +channel -shave 1x1 -trim +repage "$target_png"
+
+  # --- MODO ESTÁNDAR (B/N) ---
   else
-    # (Modo estándar B/N)
     target_svg="output/design/${name}.svg"
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
     $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
