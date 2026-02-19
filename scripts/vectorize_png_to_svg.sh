@@ -16,7 +16,6 @@ fi
 mkdir -p output/design
 mkdir -p output/web
 
-# Configuración segura para que no falle si la carpeta input está vacía
 shopt -s nullglob
 FILES=(input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS})
 
@@ -40,7 +39,7 @@ for img in "${FILES[@]}"; do
 
   generated_svg=""
 
-  # --- MODO COLOR: Limpieza de "islas" blancas ---
+  # --- MODO COLOR ---
   if [[ "$name" == *"_color"* ]]; then
     echo "  -> Modo Color: Refinando transparencia..."
     target_png="output/design/${name}_transparent.png"
@@ -56,7 +55,7 @@ for img in "${FILES[@]}"; do
       -shave 1x1 -trim +repage \
       "$target_png"
     
-  # --- MODO CAPAS: Separación de elementos y Huecos ---
+  # --- MODO CAPAS: Lógica de Borrado (Salva Huecos 100%) ---
   elif [[ "$name" == *"_layers"* ]]; then
     echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
@@ -69,36 +68,16 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    ALL_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1}' | sed 's/://')
-    
-    # 1. Detectar TODOS los blancos (Fondo principal + Huecos interiores)
-    WHITE_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)|gray\(255\)" | awk '{print $1}' | sed 's/://')
-    
-    # LA CORRECCIÓN MÁGICA: Asegurar que se conviertan a comas estrictamente
-    WHITE_IDS_CSV=$(echo $WHITE_IDS | tr ' ' ',')
-    
-    # 2. Lógica Inversa Infalible: Las piezas son todo lo que NO sea blanco
-    BLACK_IDS=""
-    for id in $ALL_IDS; do
-        is_white=0
-        for wid in $WHITE_IDS; do
-            if [ "$id" == "$wid" ]; then
-                is_white=1
-                break
-            fi
-        done
-        if [ "$is_white" -eq 0 ] && [ ! -z "$id" ]; then
-            BLACK_IDS="$BLACK_IDS $id"
-        fi
-    done
+    # Encontramos TODAS las piezas (todo lo que sea negro).
+    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
+    BLACK_IDS_CLEAN=$(echo $BLACK_IDS | xargs)
 
-    echo "    [Debug] IDs de Fondos/Huecos detectados: $WHITE_IDS_CSV"
-    echo "    [Debug] IDs de Piezas a vectorizar: $BLACK_IDS"
+    echo "    [Debug] IDs de Piezas detectadas: $BLACK_IDS_CLEAN"
 
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
 
-    if [ -z "$BLACK_IDS" ]; then
-         echo "    [Alerta] No se detectaron piezas separadas del fondo."
+    if [ -z "$BLACK_IDS_CLEAN" ]; then
+         echo "    [Alerta] No se detectaron piezas negras."
     else
         COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF")
         color_index=0
@@ -106,32 +85,40 @@ for img in "${FILES[@]}"; do
 
         for id in $BLACK_IDS; do
             echo "    [Debug] Procesando capa ID: $id"
-            
             CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
             
-            # AISLAMIENTO: Mantener la pieza actual y TODOS los fondos/huecos blancos
-            KEEP_LIST="${id}"
-            if [ ! -z "$WHITE_IDS_CSV" ]; then
-                KEEP_LIST="${id},${WHITE_IDS_CSV}"
+            # EL TRUCO MAESTRO: Crear una lista de todas las OTRAS piezas para borrarlas
+            REMOVE_LIST=""
+            for other_id in $BLACK_IDS; do
+                if [ "$other_id" != "$id" ]; then
+                    REMOVE_LIST="$REMOVE_LIST $other_id"
+                fi
+            done
+            REMOVE_CSV=$(echo $REMOVE_LIST | xargs | tr ' ' ',')
+
+            # Si hay otras piezas, las borramos. Si es la única, no hacemos nada.
+            if [ -z "$REMOVE_CSV" ]; then
+                cp "temp_binary.bmp" "temp_${counter}.bmp"
+            else
+                $IMG_TOOL "temp_binary.bmp" \
+                  -define connected-components:remove="${REMOVE_CSV}" \
+                  -define connected-components:mean-color=true \
+                  -connected-components 4 \
+                  "temp_${counter}.bmp"
             fi
-            
-            $IMG_TOOL "temp_binary.bmp" \
-              -define connected-components:keep="${KEEP_LIST}" \
-              -define connected-components:mean-color=true \
-              -connected-components 4 \
-              "temp_${counter}.bmp"
               
             potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
             
             G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg" | sed 's/fill="#000000"/fill="'"$CURRENT_COLOR"'"/g' | sed 's/fill="black"/fill="'"$CURRENT_COLOR"'"/g')
             
-            if [ ! -z "$G_BLOCK" ]; then
+            # FILTRO DE SEGURIDAD: Solo inserta si realmente existe un trazado adentro
+            if echo "$G_BLOCK" | grep -q "<path"; then
                 echo "  " >> "$target_svg"
                 echo "  <g class=\"layer icon-part-${counter}\">" >> "$target_svg"
                 echo "$G_BLOCK" >> "$target_svg"
                 echo "  </g>" >> "$target_svg"
             else
-                echo "    [Aviso] La pieza $id falló al vectorizar."
+                echo "    [Aviso] La pieza $id no contenía tinta."
             fi
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
