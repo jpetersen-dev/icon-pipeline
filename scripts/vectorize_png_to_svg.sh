@@ -55,7 +55,7 @@ for img in "${FILES[@]}"; do
       -shave 1x1 -trim +repage \
       "$target_png"
     
-  # --- MODO CAPAS: Lógica de Borrado (Salva Huecos 100%) ---
+  # --- MODO CAPAS: Lógica de Borrado (Salva Huecos) + Estructura Plana ---
   elif [[ "$name" == *"_layers"* ]]; then
     echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
@@ -68,7 +68,7 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    # FILTRO CORREGIDO: Ahora atrapa cualquier formato de negro, incluyendo srgba(0,0,0,1)
+    # FILTRO ROBUSTO PARA DETECTAR PIEZAS NEGRAS
     BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "srgba\(0,0,0|srgb\(0,0,0|gray\(0|black|#000000" | awk '{print $1}' | sed 's/://')
     BLACK_IDS_CLEAN=$(echo $BLACK_IDS | xargs)
 
@@ -79,7 +79,8 @@ for img in "${FILES[@]}"; do
     if [ -z "$BLACK_IDS_CLEAN" ]; then
          echo "    [Alerta] No se detectaron piezas negras."
     else
-        COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF")
+        # Paleta optimizada para Canva
+        COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF" "#FF9900")
         color_index=0
         counter=1
 
@@ -87,7 +88,7 @@ for img in "${FILES[@]}"; do
             echo "    [Debug] Procesando capa ID: $id"
             CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
             
-            # EL TRUCO MAESTRO: Crear una lista de todas las OTRAS piezas para borrarlas
+            # LÓGICA DE BORRADO (Mantiene huecos)
             REMOVE_LIST=""
             for other_id in $BLACK_IDS; do
                 if [ "$other_id" != "$id" ]; then
@@ -96,7 +97,6 @@ for img in "${FILES[@]}"; do
             done
             REMOVE_CSV=$(echo $REMOVE_LIST | xargs | tr ' ' ',')
 
-            # Si hay otras piezas, las borramos. Si es la única, no hacemos nada.
             if [ -z "$REMOVE_CSV" ]; then
                 cp "temp_binary.bmp" "temp_${counter}.bmp"
             else
@@ -109,17 +109,22 @@ for img in "${FILES[@]}"; do
               
             potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
             
-            G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg" | sed 's/fill="#000000"/fill="'"$CURRENT_COLOR"'"/g' | sed 's/fill="black"/fill="'"$CURRENT_COLOR"'"/g')
+            # --- CAMBIO CLAVE AQUÍ ---
+            # 1. Extraemos el bloque <g> de potrace y aplicamos el color
+            G_BLOCK_RAW=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg" | sed 's/fill="#000000"/fill="'"$CURRENT_COLOR"'"/g' | sed 's/fill="black"/fill="'"$CURRENT_COLOR"'"/g')
             
-            # FILTRO DE SEGURIDAD: Solo inserta si realmente existe un trazado adentro
-            if echo "$G_BLOCK" | grep -q "<path"; then
+            # 2. Inyectamos el ID y la Clase directamente en la etiqueta <g> de potrace
+            # Esto "aplana" la estructura eliminando el contenedor extra.
+            FINAL_G_BLOCK=$(echo "$G_BLOCK_RAW" | sed "s/<g transform=/<g id=\"layer-${counter}\" class=\"icon-part\" transform=/")
+
+            # FILTRO DE SEGURIDAD
+            if echo "$FINAL_G_BLOCK" | grep -q "<path"; then
                 echo "  " >> "$target_svg"
-                echo "  <g class=\"layer icon-part-${counter}\">" >> "$target_svg"
-                echo "$G_BLOCK" >> "$target_svg"
-                echo "  </g>" >> "$target_svg"
+                echo "$FINAL_G_BLOCK" >> "$target_svg"
             else
                 echo "    [Aviso] La pieza $id no contenía tinta."
             fi
+            # -------------------------
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
             
