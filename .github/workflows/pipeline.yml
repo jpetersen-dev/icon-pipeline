@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Necesario para que Git pueda actualizarse sin problemas
 
       - name: Install dependencies
         run: |
@@ -30,11 +32,9 @@ jobs:
           npm install -g svgo
 
       - name: Run Vectorization Script
-        # Se ejecuta siempre que subes una imagen
         run: bash scripts/vectorize_png_to_svg.sh
 
       - name: Optimize for Web (Manual Batch)
-        # Solo se ejecuta si le das al botón manual en GitHub
         if: github.event_name == 'workflow_dispatch'
         run: bash scripts/optimize_svg_for_web.sh
         env:
@@ -44,9 +44,19 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
+          
+          # Agregamos los nuevos SVGs y la eliminación de los PNGs
           git add .
+          
+          # Verificamos si realmente hay algo nuevo que subir
           if ! git diff --cached --quiet; then
             git commit -m "chore: procesar iconos, generar vectores y optimizar [skip ci]"
+            
+            # TRUCO ANTICHOQUES: Descargamos y alineamos cualquier cambio que se haya hecho 
+            # en el repositorio mientras este script estaba trabajando.
+            git pull --rebase --autostash origin main
+            
+            # Subimos los archivos procesados al repositorio
             git push
           else
             echo "No hay cambios para subir."
