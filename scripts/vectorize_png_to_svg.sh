@@ -106,12 +106,13 @@ for img in "${FILES[@]}"; do
               
             potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
             
-            # --- ESTRUCTURACIÓN CANVA-FRIENDLY ---
-            # 1. Extraemos SOLO el trazado matemático de Potrace
-            PATH_DATA=$(grep -o 'd="[^"]*"' "temp_${counter}.svg" | head -n 1)
+            # --- SOLUCIÓN DE EXTRACCIÓN INFALIBLE ---
+            # 1. Convertimos el archivo temporal en una sola línea gigante cambiando saltos por espacios
+            FLAT_SVG=$(tr '\n' ' ' < "temp_${counter}.svg")
             
-            # 2. Extraemos la transformación de Potrace (para mantener la orientación)
-            TRANSFORM_DATA=$(grep -o 'transform="[^"]*"' "temp_${counter}.svg" | head -n 1)
+            # 2. Ahora la extracción es perfecta porque todo está en la misma línea
+            PATH_DATA=$(echo "$FLAT_SVG" | grep -o 'd="[^"]*"' | head -n 1)
+            TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -o 'transform="[^"]*"' | head -n 1)
 
             # 3. Construimos un <path> limpio, sin grupos, con el color inyectado directamente
             if [ ! -z "$PATH_DATA" ]; then
@@ -132,7 +133,8 @@ for img in "${FILES[@]}"; do
     rm -f "temp_binary.bmp"
 
     # --- APLANADO FINAL CON SVGO (Exclusivo para _layers) ---
-    # Esto fusiona las transformaciones y asegura la máxima compatibilidad
+    # Esto fusiona matemáticamente las transformaciones dentro del 'path'
+    echo "    [Debug] Optimizando y fusionando transformaciones para Canva..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
   # --- MODO VECTOR (Standard) ---
