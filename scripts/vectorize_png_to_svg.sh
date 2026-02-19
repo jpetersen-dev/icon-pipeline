@@ -22,10 +22,12 @@ for img in "${FILES[@]}"; do
   HEIGHT=$(echo $DIMENSIONS | cut -d' ' -f2)
   target_svg="output/design/${name}.svg"
 
+  # =====================================================================================
+  # MODO CAPAS HYBRIDO (GEOMETRÍA PERFECTA + COLOR REAL)
+  # =====================================================================================
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
     echo "  -> Modo Híbrido: Separación geométrica + Agrupación por color real..."
     
-    # Reducimos los colores de la original a máximo 6 para facilitar el muestreo
     $IMG_TOOL "$img" -background white -alpha remove +dither -colors 6 "temp_reduced_colors.png"
 
     echo "    [Debug] Creando mapa de siluetas..."
@@ -44,15 +46,17 @@ for img in "${FILES[@]}"; do
         declare -A COLOR_GROUPS
         
         for id in $BLACK_IDS; do
-            # MÉTODO SEGURO DE MUESTREO:
-            # 1. Aislamos la pieza
+            # 1. Aislar la pieza (Pieza = NEGRO, Fondo = BLANCO)
             $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$id" -connected-components 4 "temp_mask_$id.bmp"
             
-            # 2. Copiamos el color original solo donde la máscara es negra, el resto lo hacemos transparente
-            $IMG_TOOL "temp_reduced_colors.png" "temp_mask_$id.bmp" -compose CopyOpacity -composite -transparent white "temp_color_$id.png"
+            # 2. INVERTIR MÁSCARA (Pieza = BLANCO, Fondo = NEGRO) -> ¡El paso que faltaba!
+            $IMG_TOOL "temp_mask_$id.bmp" -negate "temp_mask_$id.bmp"
 
-            # 3. Extraemos el color más usado ignorando transparencias
-            DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#00000000|#FFFFFF|#FEFEFE|#FDFDFD|#F0F0F0' | sort -nr | head -n 1 | grep -oE '#[0-9a-fA-F]{6}' || true)
+            # 3. Aplicar máscara: el negro se vuelve transparente, el blanco muestra el color de la foto
+            $IMG_TOOL "temp_reduced_colors.png" "temp_mask_$id.bmp" -compose CopyOpacity -composite "temp_color_$id.png"
+
+            # 4. Encontrar color ignorando el fondo
+            DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#00000000|#FFFFFF|#FDFDFD|#FEFEFE|#F0F0F0' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
             
             if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
             
@@ -70,19 +74,20 @@ for img in "${FILES[@]}"; do
             ids_to_keep="${COLOR_GROUPS[$hex_color]}"
             ids_csv=$(echo $ids_to_keep | xargs | tr ' ' ',')
             
-            # Aislar el grupo completo usando el CSV de IDs a mantener
             $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$ids_csv" -connected-components 4 "temp_group_${counter}.bmp"
             
-            # Vectorizar
             potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
             
-            # SOLUCIÓN ANTI-BROKEN-PIPE: Extraemos el bloque 'g' completo con sed
-            G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_group_${counter}.svg" | sed 's/fill="#000000"/fill="'"$hex_color"'"/g' | sed 's/fill="black"/fill="'"$hex_color"'"/g')
+            FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
             
-            if [ ! -z "$G_BLOCK" ]; then
-                echo "  <g id=\"layer-color-${counter}\" class=\"icon-part\">" >> "$target_svg"
-                echo "$G_BLOCK" >> "$target_svg"
-                echo "  </g>" >> "$target_svg"
+            # USO DE grep -m 1 PARA EVITAR BROKEN PIPE Y OBTENER UN PATH PLANO PARA CANVA
+            PATH_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'd="[^"]*"' || true)
+            TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'transform="[^"]*"' || true)
+
+            if [ -n "$PATH_DATA" ]; then
+                echo "  <path id=\"layer-color-${counter}\" class=\"icon-part\" fill=\"$hex_color\" $TRANSFORM_DATA $PATH_DATA />" >> "$target_svg"
+            else
+                echo "    [Aviso] El grupo $hex_color falló al vectorizar."
             fi
             
             rm -f "temp_group_${counter}.bmp" "temp_group_${counter}.svg"
@@ -93,8 +98,13 @@ for img in "${FILES[@]}"; do
     
     rm -f "temp_binary.bmp" "temp_reduced_colors.png"
     echo "    [Debug] Optimizando SVG final para Canva..."
-    # SVGO se encargará de "aplanar" esos bloques <g> que insertamos arriba
     svgo "$target_svg" --multipass --output "$target_svg"
+
+  # --- MODO COLOR PLANO ---
+  elif [[ "$name" == *"_color"* ]]; then
+     target_png="output/design/${name}_transparent.png"
+     BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
+     $IMG_TOOL "$img" -alpha set -fuzz 20% -fill none -draw "color 0,0 floodfill" -fuzz 20% -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" -fuzz 10% -transparent white -fuzz 10% -transparent "$BG_COLOR" -channel A -morphology Erode Disk:1.2 +channel -shave 1x1 -trim +repage "$target_png"
 
   # --- MODO ESTÁNDAR ---
   else
@@ -102,6 +112,7 @@ for img in "${FILES[@]}"; do
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
     $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
     potrace "${name}.bmp" -s -o "$target_svg"
+    if [[ "$name" == *"_hole"* ]]; then rsvg-convert -f pdf -o "output/design/${name}_frame.pdf" "$target_svg"; fi
     rm -f "${name}_bn.png" "${name}.bmp"
   fi
 
