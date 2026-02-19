@@ -56,7 +56,7 @@ for img in "${FILES[@]}"; do
       -shave 1x1 -trim +repage \
       "$target_png"
     
-  # --- MODO CAPAS: Separación de elementos para CSS/Canva ---
+  # --- MODO CAPAS: Separación de elementos conservando huecos ---
   elif [[ "$name" == *"_layers"* ]]; then
     echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
@@ -69,36 +69,38 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    BG_ID=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)" | head -n 1 | awk '{print $1}' | sed 's/://')
-    ALL_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1}' | sed 's/://')
+    # NUEVA LÓGICA: Separar Blancos (Fondos/Huecos) y Negros (Trazos)
+    WHITE_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)" | awk '{print $1}' | sed 's/://')
+    WHITE_IDS_CSV=$(echo $WHITE_IDS | tr ' ' ',')
+    
+    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
 
-    OBJECT_IDS=""
-    for id in $ALL_IDS; do
-        if [ "$id" != "$BG_ID" ] && [ ! -z "$id" ]; then
-            OBJECT_IDS="$OBJECT_IDS $id"
-        fi
-    done
-
-    echo "    [Debug] ID del Fondo detectado: '$BG_ID'"
-    echo "    [Debug] IDs de Piezas a procesar: $OBJECT_IDS"
+    echo "    [Debug] IDs de Fondos/Huecos detectados: $WHITE_IDS_CSV"
+    echo "    [Debug] IDs de Piezas a procesar: $(echo $BLACK_IDS | tr '\n' ' ')"
 
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
 
-    if [ -z "$OBJECT_IDS" ]; then
-         echo "    [Alerta] No se detectaron piezas separadas del fondo."
+    if [ -z "$BLACK_IDS" ]; then
+         echo "    [Alerta] No se detectaron piezas negras vectorizables."
     else
-        # TRUCO PARA CANVA: Paleta de colores sin tonos molestos, para engañar al sistema
-        COLORS=("#FF3366" "#33CCFF" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF")
+        # Paleta de colores falsos para Canva (Evitando el rojo por petición personal si estuviera)
+        COLORS=("#33CCFF" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF" "#FF3366")
         color_index=0
         counter=1
 
-        for id in $OBJECT_IDS; do
+        for id in $BLACK_IDS; do
             echo "    [Debug] Procesando capa ID: $id"
             
             CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
             
+            # EL SECRETO: Conservar la pieza negra actual ($id) Y TODOS los huecos blancos ($WHITE_IDS_CSV)
+            KEEP_LIST="${id}"
+            if [ ! -z "$WHITE_IDS_CSV" ]; then
+                KEEP_LIST="${id},${WHITE_IDS_CSV}"
+            fi
+            
             $IMG_TOOL "temp_binary.bmp" \
-              -define connected-components:keep="${BG_ID},${id}" \
+              -define connected-components:keep="${KEEP_LIST}" \
               -define connected-components:mean-color=true \
               -connected-components 4 \
               "temp_${counter}.bmp"
@@ -118,7 +120,6 @@ for img in "${FILES[@]}"; do
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
             
-            # SOLUCIÓN AL ERROR DE BASH: Sumar de forma segura sin disparar 'set -e'
             counter=$((counter + 1))
             color_index=$((color_index + 1))
         done
