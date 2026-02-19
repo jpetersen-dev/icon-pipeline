@@ -87,15 +87,14 @@ for img in "${FILES[@]}"; do
     if [ -z "$OBJECT_IDS" ]; then
          echo "    [Alerta] No se detectaron piezas separadas del fondo."
     else
-        # TRUCO PARA CANVA: Una paleta de colores para asignar uno distinto a cada capa
-        COLORS=("#FF3366" "#33CCFF" "#FFCC00" "#33FF66" "#CC33FF" "#FF9933" "#00FFFF")
+        # TRUCO PARA CANVA: Paleta de colores sin tonos molestos, para engañar al sistema
+        COLORS=("#FF3366" "#33CCFF" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF")
         color_index=0
         counter=1
 
         for id in $OBJECT_IDS; do
             echo "    [Debug] Procesando capa ID: $id"
             
-            # Elegir un color de la lista para esta capa
             CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
             
             $IMG_TOOL "temp_binary.bmp" \
@@ -106,7 +105,6 @@ for img in "${FILES[@]}"; do
               
             potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
             
-            # EXTRACCIÓN: Aquí reemplazamos el color negro de potrace por nuestro color falso
             G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg" | sed 's/fill="#000000"/fill="'"$CURRENT_COLOR"'"/g' | sed 's/fill="black"/fill="'"$CURRENT_COLOR"'"/g')
             
             if [ ! -z "$G_BLOCK" ]; then
@@ -119,8 +117,10 @@ for img in "${FILES[@]}"; do
             fi
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
-            ((counter++))
-            ((color_index++))
+            
+            # SOLUCIÓN AL ERROR DE BASH: Sumar de forma segura sin disparar 'set -e'
+            counter=$((counter + 1))
+            color_index=$((color_index + 1))
         done
     fi
     
