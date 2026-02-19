@@ -9,16 +9,28 @@ elif command -v convert >/dev/null 2>&1; then
   IMG_TOOL="convert"
   IDENTIFY_TOOL="identify"
 else
+  echo "Error: ImageMagick no está instalado."
   exit 1
 fi
 
 mkdir -p output/design
+mkdir -p output/web
+
+# Configuración segura para que no falle si la carpeta input está vacía
+shopt -s nullglob
+FILES=(input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS})
+
+if [ ${#FILES[@]} -eq 0 ]; then
+  echo "No hay imágenes nuevas para procesar en input/png/."
+  exit 0
+fi
 
 # --- 2. PROCESAMIENTO ---
-for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
-  [ -e "$img" ] || continue
+for img in "${FILES[@]}"; do
   filename=$(basename -- "$img")
   name="${filename%.*}"
+  echo "----------------------------------------"
+  echo "Procesando: $filename"
   
   DIMENSIONS=$($IDENTIFY_TOOL -format "%w %h" "$img")
   WIDTH=$(echo $DIMENSIONS | cut -d' ' -f1)
@@ -26,20 +38,15 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
   CENTER_X=$((WIDTH / 2))
   CENTER_Y=$((HEIGHT / 2))
 
-  # --- MODO COLOR: LIMPIEZA DE "ISLAS" BLANCAS ---
+  # Variable para rastrear si se generó un SVG en este ciclo
+  generated_svg=""
+
+  # --- MODO COLOR: Limpieza de "islas" blancas ---
   if [[ "$name" == *"_color"* ]]; then
-    echo "Refinando transparencia y eliminando islas: $filename"
+    echo "  -> Modo Color: Refinando transparencia..."
     target_png="output/design/${name}_transparent.png"
-    
-    # Detectar el color exacto del fondo
     BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
 
-    # EXPLICACIÓN DEL REFINAMIENTO:
-    # 1. '-fuzz 20% floodfill': Perfora las áreas grandes conectadas al fondo y centro.
-    # 2. '-fuzz 10% -transparent white': Esta es la clave. Busca cualquier pixel "casi blanco" 
-    #    que haya quedado aislado (islas) y lo vuelve transparente.
-    # 3. '-channel A -morphology Erode Disk:1.2': Suaviza los bordes internos de los huecos 
-    #    para que no queden rastros de "caspa" blanca.
     $IMG_TOOL "$img" \
       -alpha set \
       -fuzz 20% -fill none -draw "color 0,0 floodfill" \
@@ -50,11 +57,40 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
       -shave 1x1 -trim +repage \
       "$target_png"
     
-    echo "Imagen refinada lista: $target_png"
+  # --- MODO CAPAS: Separación de elementos para CSS ---
+  elif [[ "$name" == *"_layers"* ]]; then
+    echo "  -> Modo Capas: Separando elementos..."
+    target_svg="output/design/${name}.svg"
+    generated_svg="$target_svg"
+    
+    echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
+
+    # Expresión regular mejorada para detectar negro sin importar la versión de ImageMagick
+    object_ids=$($IMG_TOOL "$img" -define connected-components:area-threshold=5 -connected-components 4 null: | grep -iE "gray\(0\)|srgb\(0,0,0\)|#000000|black" | awk '{print $1}' | sed 's/://')
+    
+    counter=1
+    for id in $object_ids; do
+        $IMG_TOOL "$img" -define connected-components:keep="$id" -connected-components 4 -alpha extract -threshold 0 -negate "temp_${counter}.bmp"
+        potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
+        
+        path_d=$(grep -o 'd="[^"]*"' "temp_${counter}.svg" | head -n 1)
+        
+        if [ ! -z "$path_d" ]; then
+            echo "  <g class=\"layer\" id=\"layer-${counter}\">" >> "$target_svg"
+            echo "    <path $path_d />" >> "$target_svg"
+            echo "  </g>" >> "$target_svg"
+        fi
+        rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
+        ((counter++))
+    done
+    echo "</svg>" >> "$target_svg"
 
   # --- MODO VECTOR (Standard) ---
   else
+    echo "  -> Modo Estándar: Vectorización simple..."
     target_svg="output/design/${name}.svg"
+    generated_svg="$target_svg"
+
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
       -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
     
@@ -62,9 +98,18 @@ for img in input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS}; do
     potrace "${name}.bmp" -s -o "$target_svg"
     
     if [[ "$name" == *"_hole"* ]]; then
+      echo "  -> Generando marco PDF (_hole)..."
       rsvg-convert -f pdf -o "output/design/${name}_frame.pdf" "$target_svg"
     fi
+    rm -f "${name}_bn.png" "${name}.bmp"
   fi
 
-  rm -f "${name}_bn.png" "${name}.bmp" "$img"
+  # --- OPTIMIZACIÓN WEB ESPECÍFICA AUTOMÁTICA ---
+  if [[ "$name" == *"_web"* && -n "$generated_svg" ]]; then
+    echo "  -> Etiqueta _web detectada: Optimizando automáticamente..."
+    svgo "$generated_svg" --multipass --output "output/web/${name}.min.svg"
+  fi
+
+  # Limpiar imagen original de la carpeta input
+  rm -f "$img"
 done
