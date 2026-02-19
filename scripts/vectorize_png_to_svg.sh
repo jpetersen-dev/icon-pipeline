@@ -56,7 +56,7 @@ for img in "${FILES[@]}"; do
       -shave 1x1 -trim +repage \
       "$target_png"
     
-  # --- MODO CAPAS: Separación de elementos conservando huecos ---
+  # --- MODO CAPAS: Separación de elementos y Huecos ---
   elif [[ "$name" == *"_layers"* ]]; then
     echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
@@ -69,22 +69,37 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    # NUEVA LÓGICA: Separar Blancos (Fondos/Huecos) y Negros (Trazos)
-    WHITE_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)" | awk '{print $1}' | sed 's/://')
-    WHITE_IDS_CSV=$(echo $WHITE_IDS | tr ' ' ',')
+    ALL_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1}' | sed 's/://')
     
-    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
+    # 1. Detectar TODOS los blancos (Fondo principal + Huecos interiores)
+    WHITE_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)|gray\(255\)" | awk '{print $1}' | sed 's/://')
+    WHITE_IDS_CSV=$(echo $WHITE_IDS | tr '\n' ',' | sed 's/,$//') # Convertir a CSV limpio
+    
+    # 2. Lógica Inversa Infalible: Las piezas son todo lo que NO sea blanco
+    BLACK_IDS=""
+    for id in $ALL_IDS; do
+        is_white=0
+        for wid in $WHITE_IDS; do
+            if [ "$id" == "$wid" ]; then
+                is_white=1
+                break
+            fi
+        done
+        if [ "$is_white" -eq 0 ] && [ ! -z "$id" ]; then
+            BLACK_IDS="$BLACK_IDS $id"
+        fi
+    done
 
     echo "    [Debug] IDs de Fondos/Huecos detectados: $WHITE_IDS_CSV"
-    echo "    [Debug] IDs de Piezas a procesar: $(echo $BLACK_IDS | tr '\n' ' ')"
+    echo "    [Debug] IDs de Piezas a vectorizar: $BLACK_IDS"
 
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
 
     if [ -z "$BLACK_IDS" ]; then
-         echo "    [Alerta] No se detectaron piezas negras vectorizables."
+         echo "    [Alerta] No se detectaron piezas separadas del fondo."
     else
-        # Paleta de colores falsos para Canva (Evitando el rojo por petición personal si estuviera)
-        COLORS=("#33CCFF" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF" "#FF3366")
+        # Paleta segura para Canva (Sin naranja)
+        COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF")
         color_index=0
         counter=1
 
@@ -93,7 +108,7 @@ for img in "${FILES[@]}"; do
             
             CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
             
-            # EL SECRETO: Conservar la pieza negra actual ($id) Y TODOS los huecos blancos ($WHITE_IDS_CSV)
+            # AISLAMIENTO: Mantener la pieza actual y TODOS los fondos/huecos blancos
             KEEP_LIST="${id}"
             if [ ! -z "$WHITE_IDS_CSV" ]; then
                 KEEP_LIST="${id},${WHITE_IDS_CSV}"
@@ -115,7 +130,7 @@ for img in "${FILES[@]}"; do
                 echo "$G_BLOCK" >> "$target_svg"
                 echo "  </g>" >> "$target_svg"
             else
-                echo "    [Aviso] La pieza $id falló al vectorizar o estaba vacía."
+                echo "    [Aviso] La pieza $id falló al vectorizar."
             fi
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
