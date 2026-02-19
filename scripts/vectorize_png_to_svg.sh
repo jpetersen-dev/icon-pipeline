@@ -58,21 +58,28 @@ for img in "${FILES[@]}"; do
       "$target_png"
     
   # --- MODO CAPAS: Separación de elementos para CSS ---
+ # --- MODO CAPAS: Separación de elementos para CSS ---
   elif [[ "$name" == *"_layers"* ]]; then
-    echo "  -> Modo Capas: Separando elementos..."
+    echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
     generated_svg="$target_svg"
     
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
 
-    # Expresión regular mejorada para detectar negro sin importar la versión de ImageMagick
-    object_ids=$($IMG_TOOL "$img" -define connected-components:area-threshold=5 -connected-components 4 null: | grep -iE "gray\(0\)|srgb\(0,0,0\)|#000000|black" | awk '{print $1}' | sed 's/://')
+    # PASO CLAVE: Binarizar la imagen primero (elimina ruido de JPGs y grises)
+    $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
+      -colorspace Gray -threshold 55% "temp_binary.png"
+
+    # Detectar "islas" negras en la imagen ya purificada (agregado verbose=true para que grep funcione bien)
+    object_ids=$($IMG_TOOL "temp_binary.png" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | grep -iE "gray\(0\)|srgb\(0,0,0\)|#000000|black" | awk '{print $1}' | sed 's/://')
     
     counter=1
     for id in $object_ids; do
-        $IMG_TOOL "$img" -define connected-components:keep="$id" -connected-components 4 -alpha extract -threshold 0 -negate "temp_${counter}.bmp"
+        # Extraer esa isla desde la imagen purificada
+        $IMG_TOOL "temp_binary.png" -define connected-components:keep="$id" -connected-components 4 -alpha extract -threshold 0 -negate "temp_${counter}.bmp"
         potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
         
+        # Extraer la ruta del SVG generado
         path_d=$(grep -o 'd="[^"]*"' "temp_${counter}.svg" | head -n 1)
         
         if [ ! -z "$path_d" ]; then
@@ -83,8 +90,9 @@ for img in "${FILES[@]}"; do
         rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
         ((counter++))
     done
+    
     echo "</svg>" >> "$target_svg"
-
+    rm -f "temp_binary.png" # Limpieza del archivo temporal
   # --- MODO VECTOR (Standard) ---
   else
     echo "  -> Modo Estándar: Vectorización simple..."
