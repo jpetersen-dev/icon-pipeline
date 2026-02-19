@@ -94,7 +94,24 @@ for img in "${FILES[@]}"; do
           
         potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
         
-        # 4. EXTRACCIÓN SEGURA MULTILÍNEA: Extrae el
+        # 4. EXTRACCIÓN SEGURA MULTILÍNEA: Extrae el <g> completo de potrace
+        G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg")
+        
+        if [ ! -z "$G_BLOCK" ]; then
+            echo "  " >> "$target_svg"
+            echo "  <g class=\"layer icon-part-${counter}\">" >> "$target_svg"
+            echo "$G_BLOCK" >> "$target_svg"
+            echo "  </g>" >> "$target_svg"
+        else
+            echo "    [Aviso] La pieza $id falló al vectorizar."
+        fi
+        
+        rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
+        ((counter++))
+    done
+    
+    echo "</svg>" >> "$target_svg"
+    rm -f "temp_binary.bmp"
 
     # --- MODO VECTOR (Standard) ---
   else
