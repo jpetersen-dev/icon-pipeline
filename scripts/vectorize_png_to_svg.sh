@@ -56,9 +56,8 @@ for img in "${FILES[@]}"; do
       -channel A -morphology Erode Disk:1.2 +channel \
       -shave 1x1 -trim +repage \
       "$target_png"
-    
-  # --- MODO CAPAS: Separación de elementos para CSS ---
- # --- MODO CAPAS: Separación de elementos para CSS ---
+
+# --- MODO CAPAS: Separación de elementos para CSS ---
   elif [[ "$name" == *"_layers"* ]]; then
     echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
@@ -66,34 +65,66 @@ for img in "${FILES[@]}"; do
     
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
 
-    # PASO CLAVE: Binarizar la imagen primero (elimina ruido de JPGs y grises)
+    echo "    [Debug] Generando mapa binario perfecto..."
+    # 1. Binarizamos igual que en el modo estándar para asegurar blanco/negro puro
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
-      -colorspace Gray -threshold 55% "temp_binary.png"
+      -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.png"
+    $IMG_TOOL "temp_binary.png" -background white -alpha remove "temp_binary.bmp"
 
-    # Detectar "islas" negras en la imagen ya purificada (agregado verbose=true para que grep funcione bien)
-    object_ids=$($IMG_TOOL "temp_binary.png" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | grep -iE "gray\(0\)|srgb\(0,0,0\)|#000000|black" | awk '{print $1}' | sed 's/://')
+    echo "    [Debug] Analizando topología de la imagen..."
+    # 2. Guardamos el análisis completo en una variable (eliminamos retornos de carro por seguridad)
+    CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    counter=1
-    for id in $object_ids; do
-        # Extraer esa isla desde la imagen purificada
-        $IMG_TOOL "temp_binary.png" -define connected-components:keep="$id" -connected-components 4 -alpha extract -threshold 0 -negate "temp_${counter}.bmp"
-        potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
-        
-        # Extraer la ruta del SVG generado
-        path_d=$(grep -o 'd="[^"]*"' "temp_${counter}.svg" | head -n 1)
-        
+    # 3. Extraemos el ID del FONDO (Buscamos lo que sea blanco: 255 o white)
+    BG_ID=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1, $NF}' | grep -iE "255\)|white|#FFFFFF" | head -n 1 | awk '{print $1}' | sed 's/://')
+    
+    # 4. Extraemos los IDs de las PIEZAS (Buscamos lo que sea negro: 0 o black)
+    OBJECT_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1, $NF}' | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
+
+    echo "    [Debug] ID del Fondo detectado: '$BG_ID'"
+    echo "    [Debug] IDs de Piezas detectadas: '$OBJECT_IDS'"
+
+    # Si por alguna razón no detecta piezas, hacemos un trazado normal de emergencia
+    if [ -z "$OBJECT_IDS" ]; then
+        echo "    [Error] No se detectaron piezas separadas. Haciendo trazado estándar de emergencia."
+        potrace "temp_binary.bmp" -s -o "temp_emergency.svg"
+        path_d=$(grep -o 'd="[^"]*"' "temp_emergency.svg" | head -n 1)
         if [ ! -z "$path_d" ]; then
-            echo "  <g class=\"layer\" id=\"layer-${counter}\">" >> "$target_svg"
+            echo "  <g class=\"layer\" id=\"layer-emergency\">" >> "$target_svg"
             echo "    <path $path_d />" >> "$target_svg"
             echo "  </g>" >> "$target_svg"
         fi
-        rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
-        ((counter++))
-    done
+        rm -f "temp_emergency.svg"
+    else
+        counter=1
+        for id in $OBJECT_IDS; do
+            echo "    [Debug] Aislando y vectorizando pieza ID: $id"
+            
+            # PASO CLAVE: Conservamos la pieza actual ($id) Y el fondo ($BG_ID)
+            $IMG_TOOL "temp_binary.bmp" \
+              -define connected-components:keep="${BG_ID},${id}" \
+              -define connected-components:mean-color=true \
+              -connected-components 4 \
+              "temp_${counter}.bmp"
+              
+            potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
+            
+            path_d=$(grep -o 'd="[^"]*"' "temp_${counter}.svg" | head -n 1)
+            
+            if [ ! -z "$path_d" ]; then
+                echo "  <g class=\"layer\" id=\"layer-${counter}\">" >> "$target_svg"
+                echo "    <path $path_d />" >> "$target_svg"
+                echo "  </g>" >> "$target_svg"
+            fi
+            rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
+            ((counter++))
+        done
+    fi
     
     echo "</svg>" >> "$target_svg"
-    rm -f "temp_binary.png" # Limpieza del archivo temporal
-  # --- MODO VECTOR (Standard) ---
+    rm -f "temp_binary.png" "temp_binary.bmp"
+    
+    # --- MODO VECTOR (Standard) ---
   else
     echo "  -> Modo Estándar: Vectorización simple..."
     target_svg="output/design/${name}.svg"
