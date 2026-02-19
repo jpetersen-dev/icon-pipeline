@@ -73,7 +73,9 @@ for img in "${FILES[@]}"; do
     
     # 1. Detectar TODOS los blancos (Fondo principal + Huecos interiores)
     WHITE_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)|gray\(255\)" | awk '{print $1}' | sed 's/://')
-    WHITE_IDS_CSV=$(echo $WHITE_IDS | tr '\n' ',' | sed 's/,$//') # Convertir a CSV limpio
+    
+    # LA CORRECCIÓN MÁGICA: Asegurar que se conviertan a comas estrictamente
+    WHITE_IDS_CSV=$(echo $WHITE_IDS | tr ' ' ',')
     
     # 2. Lógica Inversa Infalible: Las piezas son todo lo que NO sea blanco
     BLACK_IDS=""
@@ -98,7 +100,6 @@ for img in "${FILES[@]}"; do
     if [ -z "$BLACK_IDS" ]; then
          echo "    [Alerta] No se detectaron piezas separadas del fondo."
     else
-        # Paleta segura para Canva (Sin naranja)
         COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF" "#FF00FF")
         color_index=0
         counter=1
