@@ -68,8 +68,8 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    # Encontramos TODAS las piezas (todo lo que sea negro).
-    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "0\)|black|#000000|0,0,0\)" | awk '{print $1}' | sed 's/://')
+    # FILTRO CORREGIDO: Ahora atrapa cualquier formato de negro, incluyendo srgba(0,0,0,1)
+    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "srgba\(0,0,0|srgb\(0,0,0|gray\(0|black|#000000" | awk '{print $1}' | sed 's/://')
     BLACK_IDS_CLEAN=$(echo $BLACK_IDS | xargs)
 
     echo "    [Debug] IDs de Piezas detectadas: $BLACK_IDS_CLEAN"
