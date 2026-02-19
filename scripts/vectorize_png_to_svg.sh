@@ -38,7 +38,6 @@ for img in "${FILES[@]}"; do
   CENTER_X=$((WIDTH / 2))
   CENTER_Y=$((HEIGHT / 2))
 
-  # Variable para rastrear si se generó un SVG en este ciclo
   generated_svg=""
 
   # --- MODO COLOR: Limpieza de "islas" blancas ---
@@ -57,38 +56,24 @@ for img in "${FILES[@]}"; do
       -shave 1x1 -trim +repage \
       "$target_png"
     
-  # --- MODO CAPAS: Separación de elementos para CSS ---
+  # --- MODO CAPAS: Separación de elementos para CSS/Canva ---
   elif [[ "$name" == *"_layers"* ]]; then
     echo "  -> Modo Capas: Separando elementos para $filename..."
     target_svg="output/design/${name}.svg"
     generated_svg="$target_svg"
     
     echo "    [Debug] Generando mapa binario..."
-    # 1. Limpiamos y binarizamos (asegura blanco y negro puro)
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" \
       -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.bmp"
 
     echo "    [Debug] Analizando topología..."
-    # Obtenemos el análisis completo eliminando retornos de carro molestos
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=5 -connected-components 4 null: | tr -d '\r')
     
-    # --- DEBUG CRÍTICO: Imprimir lo que ve ImageMagick ---
-    echo "    [DEBUG RAW OUTPUT] Inicio >>>"
-    echo "$CC_OUTPUT"
-    echo "    [DEBUG RAW OUTPUT] <<< Fin"
-    # ----------------------------------------------------
-
-    # 2. Detección robusta (Lógica Inversa)
-    # Detectamos el ID del fondo blanco (buscando 'white', '255' o el color más frecuente)
     BG_ID=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "white|#FFFFFF|255|,255,255\)" | head -n 1 | awk '{print $1}' | sed 's/://')
-
-    # Obtenemos TODOS los IDs detectados
     ALL_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{print $1}' | sed 's/://')
 
-    # Filtramos: Los objetos son todo lo que NO sea el fondo
     OBJECT_IDS=""
     for id in $ALL_IDS; do
-        # Si el ID actual no es el fondo (y no está vacío), lo agregamos a la lista
         if [ "$id" != "$BG_ID" ] && [ ! -z "$id" ]; then
             OBJECT_IDS="$OBJECT_IDS $id"
         fi
@@ -97,17 +82,22 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] ID del Fondo detectado: '$BG_ID'"
     echo "    [Debug] IDs de Piezas a procesar: $OBJECT_IDS"
 
-    # Iniciamos el documento SVG
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
 
     if [ -z "$OBJECT_IDS" ]; then
          echo "    [Alerta] No se detectaron piezas separadas del fondo."
     else
+        # TRUCO PARA CANVA: Una paleta de colores para asignar uno distinto a cada capa
+        COLORS=("#FF3366" "#33CCFF" "#FFCC00" "#33FF66" "#CC33FF" "#FF9933" "#00FFFF")
+        color_index=0
         counter=1
+
         for id in $OBJECT_IDS; do
             echo "    [Debug] Procesando capa ID: $id"
             
-            # 3. AISLAMIENTO: Conservamos fondo y pieza
+            # Elegir un color de la lista para esta capa
+            CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
+            
             $IMG_TOOL "temp_binary.bmp" \
               -define connected-components:keep="${BG_ID},${id}" \
               -define connected-components:mean-color=true \
@@ -116,8 +106,8 @@ for img in "${FILES[@]}"; do
               
             potrace "temp_${counter}.bmp" -s -o "temp_${counter}.svg"
             
-            # 4. EXTRACCIÓN SEGURA MULTILÍNEA
-            G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg")
+            # EXTRACCIÓN: Aquí reemplazamos el color negro de potrace por nuestro color falso
+            G_BLOCK=$(sed -n '/<g transform=/,/<\/g>/p' "temp_${counter}.svg" | sed 's/fill="#000000"/fill="'"$CURRENT_COLOR"'"/g' | sed 's/fill="black"/fill="'"$CURRENT_COLOR"'"/g')
             
             if [ ! -z "$G_BLOCK" ]; then
                 echo "  " >> "$target_svg"
@@ -130,6 +120,7 @@ for img in "${FILES[@]}"; do
             
             rm -f "temp_${counter}.bmp" "temp_${counter}.svg"
             ((counter++))
+            ((color_index++))
         done
     fi
     
@@ -161,6 +152,5 @@ for img in "${FILES[@]}"; do
     svgo "$generated_svg" --multipass --output "output/web/${name}.min.svg"
   fi
 
-  # Limpiar imagen original de la carpeta input
   rm -f "$img"
 done
