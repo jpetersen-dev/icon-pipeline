@@ -7,6 +7,11 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
   workflow_dispatch:
+    inputs:
+      force_optimize_all:
+        description: 'Forzar optimización de TODOS los SVGs en output/design'
+        type: boolean
+        default: true
 
 jobs:
   process:
@@ -21,26 +26,27 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          # Instalamos imagemagick, potrace, ghostscript (para EPS) y librsvg (para PDF)
           sudo apt-get install -y imagemagick potrace ghostscript librsvg2-bin
-          # SVGO para la optimización web opcional
           npm install -g svgo
 
       - name: Run Vectorization Script
+        # Se ejecuta siempre que subes una imagen
         run: bash scripts/vectorize_png_to_svg.sh
 
-      - name: Optimize for Web (Manual only)
+      - name: Optimize for Web (Manual Batch)
+        # Solo se ejecuta si le das al botón manual en GitHub
         if: github.event_name == 'workflow_dispatch'
         run: bash scripts/optimize_svg_for_web.sh
+        env:
+          FORCE_ALL: ${{ github.event.inputs.force_optimize_all }}
 
       - name: Commit and Push results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
-          # 'git add .' detecta tanto los nuevos SVGs como la eliminación de los originales
           git add .
           if ! git diff --cached --quiet; then
-            git commit -m "chore: procesar iconos, generar marcos y limpiar originales [skip ci]"
+            git commit -m "chore: procesar iconos, generar vectores y optimizar [skip ci]"
             git push
           else
             echo "No hay cambios para subir."
