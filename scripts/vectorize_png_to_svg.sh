@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+# --- 1. CONFIGURACIÓN ---
 if command -v magick >/dev/null 2>&1; then IMG_TOOL="magick"; IDENTIFY_TOOL="magick identify"
 elif command -v convert >/dev/null 2>&1; then IMG_TOOL="convert"; IDENTIFY_TOOL="identify"
 else echo "Error: ImageMagick no está instalado."; exit 1; fi
@@ -11,6 +12,7 @@ FILES=(input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS})
 
 if [ ${#FILES[@]} -eq 0 ]; then exit 0; fi
 
+# --- 2. PROCESAMIENTO ---
 for img in "${FILES[@]}"; do
   filename=$(basename -- "$img")
   name="${filename%.*}"
@@ -23,13 +25,13 @@ for img in "${FILES[@]}"; do
   target_svg="output/design/${name}.svg"
 
   # =====================================================================================
-  # MODO CAPAS HYBRIDO (GEOMETRÍA PERFECTA + COLOR REAL)
+  # MODO CAPAS HYBRIDO (LA LÓGICA PROBADA QUE FUNCIONÓ)
   # =====================================================================================
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
     echo "  -> Modo Híbrido: Separación geométrica + Agrupación por color real..."
     
     # 1. Reducir colores sobre fondo blanco (sin transparencias)
-    $IMG_TOOL "$img" -background white -alpha remove +dither -colors 6 "temp_reduced_colors.png"
+    $IMG_TOOL "$img" -background white -alpha remove +dither -colors 8 "temp_reduced_colors.png"
 
     # 2. Crear mapa binario garantizado: Fondo Blanco, Trazos Negros
     echo "    [Debug] Creando mapa de siluetas..."
@@ -50,34 +52,27 @@ for img in "${FILES[@]}"; do
         declare -A COLOR_GROUPS
         
         for id in $BLACK_IDS; do
-            # LÓGICA DE MÁSCARA INFALIBLE:
-            # A) Crear lista de IDs a borrar (todo menos esta pieza)
+            # LÓGICA DE MÁSCARA INFALIBLE (LA QUE FUNCIONÓ):
             REMOVE_LIST=""
             for other_id in $BLACK_IDS; do
                 if [ "$other_id" != "$id" ]; then REMOVE_LIST="$REMOVE_LIST $other_id"; fi
             done
             REMOVE_CSV=$(echo $REMOVE_LIST | xargs | tr ' ' ',')
 
-            # B) Aislar la pieza manteniendo el fondo blanco
             if [ -z "$REMOVE_CSV" ]; then
                 cp "temp_binary.bmp" "temp_mask_$id.bmp"
             else
                 $IMG_TOOL "temp_binary.bmp" -define connected-components:remove="${REMOVE_CSV}" -define connected-components:mean-color=true -connected-components 4 "temp_mask_$id.bmp"
             fi
 
-            # C) Invertir: El fondo se vuelve Negro, el Trazo se vuelve Blanco
             $IMG_TOOL "temp_mask_$id.bmp" -negate "temp_mask_inv_$id.bmp"
-            
-            # D) Multiplicar por la imagen original: El negro absorbe la luz, el blanco deja pasar el color
             $IMG_TOOL "temp_reduced_colors.png" "temp_mask_inv_$id.bmp" -compose Multiply -composite "temp_color_$id.png"
 
-            # E) Buscar el color, ignorando estrictamente el negro del fondo y los blancos residuales
             DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -iE '#[0-9a-fA-F]{6}' | grep -ivE '#000000|#FFFFFF|#FDFDFD|#FEFEFE|#F0F0F0|none' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
             
-            # Si era verdaderamente negra, el filtro la borró. La restauramos.
             if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
             
-            echo "      - Isla $id -> Color detectado: $DOMINANT_COLOR"
+            # echo "      - Isla $id -> Color detectado: $DOMINANT_COLOR" # Comentado para limpiar logs
             COLOR_GROUPS["$DOMINANT_COLOR"]="${COLOR_GROUPS["$DOMINANT_COLOR"]} $id"
             
             rm -f "temp_mask_$id.bmp" "temp_mask_inv_$id.bmp" "temp_color_$id.png"
@@ -88,9 +83,11 @@ for img in "${FILES[@]}"; do
         counter=1
         
         for hex_color in "${!COLOR_GROUPS[@]}"; do
+            # Ignorar grupos negros (basura o errores de detección)
+            if [ "$hex_color" == "#000000" ]; then continue; fi
+            
             ids_to_keep="${COLOR_GROUPS[$hex_color]}"
             
-            # A) Crear lista de borrado para el GRUPO COMPLETO
             REMOVE_LIST=""
             for all_id in $BLACK_IDS; do
                 keep_this=0
@@ -101,25 +98,23 @@ for img in "${FILES[@]}"; do
             done
             REMOVE_CSV=$(echo $REMOVE_LIST | xargs | tr ' ' ',')
 
-            # B) Crear el mapa binario del grupo (Huecos garantizados)
+            # CREAR LIENZO BLANCO SÓLIDO PARA EL GRUPO (LA SOLUCIÓN AL RECORTE)
             if [ -z "$REMOVE_CSV" ]; then
                 cp "temp_binary.bmp" "temp_group_${counter}.bmp"
             else
-                $IMG_TOOL "temp_binary.bmp" -define connected-components:remove="${REMOVE_CSV}" -define connected-components:mean-color=true -connected-components 4 "temp_group_${counter}.bmp"
+                # Aislar las piezas y asegurar fondo blanco sólido
+                $IMG_TOOL "temp_binary.bmp" -define connected-components:remove="${REMOVE_CSV}" -define connected-components:mean-color=true -connected-components 4 -background white -alpha remove "temp_group_${counter}.bmp"
             fi
             
-            # C) Vectorizar con Potrace
+            # Vectorizar (Potrace ama los fondos blancos sólidos)
             potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
             
-            # D) Extraer y aplanar para Canva
             FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
             PATH_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'd="[^"]*"' || true)
             TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'transform="[^"]*"' || true)
 
             if [ -n "$PATH_DATA" ]; then
                 echo "  <path id=\"layer-color-${counter}\" class=\"icon-part\" fill=\"$hex_color\" $TRANSFORM_DATA $PATH_DATA />" >> "$target_svg"
-            else
-                echo "    [Aviso] El grupo $hex_color falló al vectorizar."
             fi
             
             rm -f "temp_group_${counter}.bmp" "temp_group_${counter}.svg"
