@@ -30,28 +30,34 @@ for img in "${FILES[@]}"; do
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
     echo "  -> Modo Híbrido: Analizando geometría y colores..."
     
-    # 1. Reducir colores sobre fondo blanco (para muestreo seguro)
+    # 1. Reducir colores sobre fondo blanco
     $IMG_TOOL "$img" -background white -alpha remove +dither -colors 8 "temp_reduced_colors.png"
 
     # 2. Crear mapa binario perfecto
     $IMG_TOOL "$img" -background white -alpha remove -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.bmp"
 
     # 3. Analizar topología
+    echo "    [Debug] Analizando topología y aislando huecos..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=10 -connected-components 4 null: | tr -d '\r')
     
-    # LA MAGIA DE LOS HUECOS: Identificamos TODOS los componentes blancos (Fondo principal + Huecos internos)
-    WHITE_CSV=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "gray\(255\)|white|#FFFFFF" | awk '{print $1}' | sed 's/://' | xargs | tr ' ' ',')
-    # Identificamos las piezas negras
-    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | grep -iE "gray\(0\)|black|#000000" | awk '{print $1}' | sed 's/://')
+    # LA MAGIA INFALIBLE: Identificar las piezas por diferencia con el fondo, no por nombre de color.
+    BG_COLOR_RAW=$(echo "$CC_OUTPUT" | tail -n +2 | head -n 1 | awk '{print $NF}')
+    
+    # Huecos = Todo lo que tenga el mismo color que el fondo
+    WHITE_CSV=$(echo "$CC_OUTPUT" | tail -n +2 | awk -v bgc="$BG_COLOR_RAW" '{if ($NF == bgc) print $1}' | sed 's/://' | xargs | tr ' ' ',')
+    
+    # Piezas = Todo lo que tenga un color diferente al fondo
+    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk -v bgc="$BG_COLOR_RAW" '{if ($NF != bgc) print $1}' | sed 's/://')
 
     if [ -z "$BLACK_IDS" ]; then
+         echo "    [Alerta] No se detectaron piezas."
          echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\"></svg>" > "$target_svg"
     else
         echo "    [Debug] Muestreando color original..."
         declare -A COLOR_GROUPS
         
         for id in $BLACK_IDS; do
-            # Aislar la pieza manteniendo los blancos (para que no pierda su forma)
+            # Aislar la pieza manteniendo los blancos (garantía de huecos)
             KEEP_ALL="${id},${WHITE_CSV}"
             $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_mask_$id.bmp"
             
@@ -59,11 +65,12 @@ for img in "${FILES[@]}"; do
             $IMG_TOOL "temp_mask_$id.bmp" -negate "temp_mask_inv_$id.bmp"
             $IMG_TOOL "temp_reduced_colors.png" "temp_mask_inv_$id.bmp" -compose Multiply -composite "temp_color_$id.png"
 
+            # Encontrar el color, ignorando el fondo negro que creamos
             DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#000000|#00000000' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
             
             if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
             
-            echo "      - Pieza $id -> Color: $DOMINANT_COLOR"
+            echo "      - Pieza $id -> Color detectado: $DOMINANT_COLOR"
             COLOR_GROUPS["$DOMINANT_COLOR"]="${COLOR_GROUPS["$DOMINANT_COLOR"]} $id"
             
             rm -f "temp_mask_$id.bmp" "temp_mask_inv_$id.bmp" "temp_color_$id.png"
@@ -73,7 +80,7 @@ for img in "${FILES[@]}"; do
         echo "    [Debug] Colores únicos detectados: $num_colors"
         echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
         
-        # SI LA IMAGEN ES MONOCROMÁTICA (Ej. Logo Negro)
+        # SI LA IMAGEN ES MONOCROMÁTICA (Separar piezas geométricas para Canva)
         if [ "$num_colors" -eq 1 ]; then
             echo "    [Debug] Logo monocromático detectado. Separando geométricamente (Modo Canva)..."
             COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF")
@@ -82,8 +89,6 @@ for img in "${FILES[@]}"; do
             
             for id in $BLACK_IDS; do
                 CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
-                
-                # GARANTÍA DE HUECOS TRANSPARENTES
                 KEEP_ALL="${id},${WHITE_CSV}"
                 
                 $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
@@ -102,7 +107,7 @@ for img in "${FILES[@]}"; do
                 color_index=$((color_index + 1))
             done
             
-        # SI LA IMAGEN YA TIENE COLORES (Ej. Logo Rojo/Azul)
+        # SI LA IMAGEN ES COLORIDA (Agrupar por color real detectado)
         else
             echo "    [Debug] Logo colorido detectado. Agrupando por color real..."
             counter=1
@@ -110,7 +115,6 @@ for img in "${FILES[@]}"; do
                 ids_to_keep="${COLOR_GROUPS[$hex_color]}"
                 ids_csv=$(echo $ids_to_keep | xargs | tr ' ' ',')
                 
-                # GARANTÍA DE HUECOS TRANSPARENTES
                 KEEP_ALL="${ids_csv},${WHITE_CSV}"
                 
                 $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
@@ -135,13 +139,12 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Optimizando SVG..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
-  # --- MODO COLOR PLANO ---
+  # --- OTROS MODOS ---
   elif [[ "$name" == *"_color"* ]]; then
      target_png="output/design/${name}_transparent.png"
      BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
      $IMG_TOOL "$img" -alpha set -fuzz 20% -fill none -draw "color 0,0 floodfill" -fuzz 20% -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" -fuzz 10% -transparent white -fuzz 10% -transparent "$BG_COLOR" -channel A -morphology Erode Disk:1.2 +channel -shave 1x1 -trim +repage "$target_png"
 
-  # --- MODO ESTÁNDAR ---
   else
     target_svg="output/design/${name}.svg"
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
