@@ -25,94 +25,63 @@ for img in "${FILES[@]}"; do
   target_svg="output/design/${name}.svg"
 
   # =====================================================================================
-  # MODO CAPAS HYBRIDO (MUESTRO PERFECTO + HUECOS GARANTIZADOS + EXTRACCIÓN TOTAL)
+  # NUEVA ESTRATEGIA: SEPARACIÓN POR CANALES DE COLOR (Tipo Serigrafía)
   # =====================================================================================
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
-    echo "  -> Modo Híbrido: Analizando geometría y colores..."
+    echo "  -> Nueva Estrategia: Separación por canales de color puro..."
     
-    # Reducir colores sobre fondo blanco
-    $IMG_TOOL "$img" -background white -alpha remove +dither -colors 8 "temp_reduced_colors.png"
-
-    # Crear mapa binario perfecto
-    $IMG_TOOL "$img" -background white -alpha remove -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.bmp"
-
-    # Analizar topología para separar piezas y aislar huecos
-    echo "    [Debug] Analizando topología y aislando huecos..."
-    CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=10 -connected-components 4 null: | tr -d '\r')
+    # 1. Aplanar, suavizar ligeramente y reducir la paleta a max 6 colores.
+    # Esto mata el "antialiasing" (los bordes borrosos) y hace que los colores sean sólidos.
+    $IMG_TOOL "$img" -background white -alpha remove -colorspace sRGB -blur 0x0.3 +dither -colors 6 -normalize "temp_quantized.png"
     
-    BG_COLOR_RAW=$(echo "$CC_OUTPUT" | tail -n +2 | head -n 1 | awk '{print $NF}')
+    # 2. Obtener el color del fondo de la esquina superior izquierda
+    BG_COLOR=$($IMG_TOOL "temp_quantized.png" -format "%[pixel:p{0,0}]" info: | grep -oE '#[0-9a-fA-F]{6}' || echo "#FFFFFF")
     
-    # LA CLAVE DE LOS HUECOS: Guardamos TODOS los IDs de las zonas blancas
-    WHITE_CSV=$(echo "$CC_OUTPUT" | tail -n +2 | awk -v bgc="$BG_COLOR_RAW" '{if ($NF == bgc) print $1}' | sed 's/://' | xargs | tr ' ' ',')
-    # Extraemos solo los IDs de las piezas negras
-    BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk -v bgc="$BG_COLOR_RAW" '{if ($NF != bgc) print $1}' | sed 's/://')
-
-    if [ -z "$BLACK_IDS" ]; then
-         echo "    [Alerta] No se detectaron piezas."
-         echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\"></svg>" > "$target_svg"
-    else
-        echo "    [Debug] Muestreando color original..."
-        declare -A COLOR_GROUPS
-        
-        for id in $BLACK_IDS; do
-            # 1. Aislar manteniendo los huecos explícitamente (KEEP)
-            KEEP_ALL="${id},${WHITE_CSV}"
-            KEEP_ALL=$(echo "$KEEP_ALL" | sed 's/,$//' | sed 's/^,//')
-            
-            $IMG_TOOL "temp_binary.bmp" -define connected-components:mean-color=true -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_mask_$id.bmp"
-            
-            # 2. Invertir y Multiplicar
-            $IMG_TOOL "temp_mask_$id.bmp" -negate "temp_mask_inv_$id.bmp"
-            $IMG_TOOL "temp_reduced_colors.png" "temp_mask_inv_$id.bmp" -compose Multiply -composite "temp_color_$id.png"
-
-            # 3. Muestrear (ignorando el negro absoluto)
-            DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#000000|#00000000' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
-            
-            if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
-            
-            echo "      - Pieza $id -> Color detectado: $DOMINANT_COLOR"
-            COLOR_GROUPS["$DOMINANT_COLOR"]="${COLOR_GROUPS["$DOMINANT_COLOR"]} $id"
-            
-            rm -f "temp_mask_$id.bmp" "temp_mask_inv_$id.bmp" "temp_color_$id.png"
-        done
-
-        num_colors=${#COLOR_GROUPS[@]}
-        echo "    [Debug] Colores únicos a generar: $num_colors"
-        echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
-        
-        counter=1
-        for hex_color in "${!COLOR_GROUPS[@]}"; do
-            ids_to_keep="${COLOR_GROUPS[$hex_color]}"
-            ids_csv=$(echo $ids_to_keep | xargs | tr ' ' ',')
-            
-            # LA CLAVE DE LOS HUECOS EN LA AGRUPACIÓN
-            KEEP_ALL="${ids_csv},${WHITE_CSV}"
-            KEEP_ALL=$(echo "$KEEP_ALL" | sed 's/,$//' | sed 's/^,//')
-            
-            $IMG_TOOL "temp_binary.bmp" -define connected-components:mean-color=true -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
-            potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
-            
-            FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
-            TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'transform="[^"]*"' || true)
-
-            # LA SOLUCIÓN A LAS PIEZAS FALTANTES: Un bucle que extrae TODOS los trazados generados
-            echo "$FLAT_SVG" | grep -o 'd="[^"]*"' > "temp_paths.txt" || true
-            
-            path_count=1
-            while read -r d_attr; do
-                if [ -n "$d_attr" ]; then
-                    echo "  <path id=\"layer-${counter}-piece-${path_count}\" class=\"icon-part\" fill=\"$hex_color\" $TRANSFORM_DATA $d_attr />" >> "$target_svg"
-                    path_count=$((path_count + 1))
-                fi
-            done < "temp_paths.txt"
-            
-            rm -f "temp_group_${counter}.bmp" "temp_group_${counter}.svg" "temp_paths.txt"
-            counter=$((counter + 1))
-        done
-        echo "</svg>" >> "$target_svg"
+    # 3. Detectar todos los colores en la imagen, ignorando el fondo y el blanco/gris claro.
+    echo "    [Debug] Extrayendo paleta de colores reales..."
+    COLORS=$($IMG_TOOL "temp_quantized.png" -format "%c" histogram:info: | grep -ivE "$BG_COLOR|#FFFFFF|#FDFDFD|#FEFEFE|none" | sort -nr | head -n 5 | grep -oE '#[0-9a-fA-F]{6}' || true)
+    
+    if [ -z "$COLORS" ]; then
+        echo "    [Aviso] No se detectaron colores. Procesando como monocromático."
+        COLORS="#000000"
+        $IMG_TOOL "temp_quantized.png" -threshold 50% "temp_quantized.png"
     fi
+
+    echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
     
-    rm -f "temp_binary.bmp" "temp_reduced_colors.png"
+    counter=1
+    for hex_color in $COLORS; do
+        echo "      - Vectorizando capa para el color: $hex_color"
+        
+        # EL SECRETO PARA LOS HUECOS PERFECTOS:
+        # Seleccionamos nuestro color objetivo y lo pintamos de NEGRO.
+        # Pintamos el resto del universo (fondo, otros colores, huecos) de BLANCO.
+        $IMG_TOOL "temp_quantized.png" -fuzz 2% -fill black -opaque "$hex_color" -fuzz 0% -fill white +opaque black -morphology Close Disk:1 "temp_layer.bmp"
+        
+        # Potrace vectoriza lo negro. ¡Al ser los huecos blancos, Potrace los recorta automáticamente!
+        potrace "temp_layer.bmp" -s -o "temp_layer.svg"
+        
+        # Extraer los datos de la ruta
+        FLAT_SVG=$(tr '\n' ' ' < "temp_layer.svg")
+        TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'transform="[^"]*"' || true)
+        
+        # Extraemos todos los trazados que Potrace haya encontrado para este color
+        echo "$FLAT_SVG" | grep -o 'd="[^"]*"' > "temp_paths.txt" || true
+        
+        path_count=1
+        while read -r d_attr; do
+            if [ -n "$d_attr" ]; then
+                echo "  <path id=\"layer-${counter}-p-${path_count}\" class=\"icon-part\" fill=\"$hex_color\" $TRANSFORM_DATA $d_attr />" >> "$target_svg"
+                path_count=$((path_count + 1))
+            fi
+        done < "temp_paths.txt"
+        
+        rm -f "temp_layer.bmp" "temp_layer.svg" "temp_paths.txt"
+        counter=$((counter + 1))
+    done
+    echo "</svg>" >> "$target_svg"
+    
+    rm -f "temp_quantized.png"
     echo "    [Debug] Optimizando SVG..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
