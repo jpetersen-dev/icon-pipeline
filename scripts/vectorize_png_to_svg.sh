@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 
+# --- 1. CONFIGURACIÓN ---
 if command -v magick >/dev/null 2>&1; then IMG_TOOL="magick"; IDENTIFY_TOOL="magick identify"
 elif command -v convert >/dev/null 2>&1; then IMG_TOOL="convert"; IDENTIFY_TOOL="identify"
 else echo "Error: ImageMagick no está instalado."; exit 1; fi
@@ -11,6 +12,7 @@ FILES=(input/png/*.{png,jpg,jpeg,eps,PNG,JPG,JPEG,EPS})
 
 if [ ${#FILES[@]} -eq 0 ]; then exit 0; fi
 
+# --- 2. PROCESAMIENTO ---
 for img in "${FILES[@]}"; do
   filename=$(basename -- "$img")
   name="${filename%.*}"
@@ -23,19 +25,23 @@ for img in "${FILES[@]}"; do
   target_svg="output/design/${name}.svg"
 
   # =====================================================================================
-  # MODO CAPAS HYBRIDO (GEOMETRÍA PERFECTA + COLOR REAL)
+  # MODO CAPAS HYBRIDO (LA SOLUCIÓN MATEMÁTICA DEFINITIVA)
   # =====================================================================================
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
     echo "  -> Modo Híbrido: Separación geométrica + Agrupación por color real..."
     
-    $IMG_TOOL "$img" -background white -alpha remove +dither -colors 6 "temp_reduced_colors.png"
+    # 1. Reducir colores sobre fondo blanco (sin transparencias traicioneras)
+    $IMG_TOOL "$img" -background white -alpha remove +dither -colors 8 "temp_reduced_colors.png"
 
+    # 2. Crear mapa binario (Trazos Negros, Fondo Blanco)
     echo "    [Debug] Creando mapa de siluetas..."
     $IMG_TOOL "$img" -background white -alpha remove -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "temp_binary.bmp"
 
+    # 3. Detectar topología
     echo "    [Debug] Analizando topología..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=10 -connected-components 4 null: | tr -d '\r')
     
+    # La pieza más grande siempre es el fondo (lo descartamos)
     BG_ID=$(echo "$CC_OUTPUT" | tail -n +2 | head -n 1 | awk '{print $1}' | sed 's/://')
     BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk '{if ($1 != "'"$BG_ID"':" && $1 != "") print $1}' | sed 's/://')
 
@@ -46,18 +52,18 @@ for img in "${FILES[@]}"; do
         declare -A COLOR_GROUPS
         
         for id in $BLACK_IDS; do
-            # 1. Aislar la pieza (Pieza = NEGRO, Fondo = BLANCO)
-            $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$id" -connected-components 4 "temp_mask_$id.bmp"
+            # TRUCO DE MULTIPLICACIÓN:
+            # A) Aislar la pieza en blanco y negro, e invertirla (Pieza=Blanco, Fondo=Negro)
+            $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$id" -connected-components 4 -negate "temp_mask_$id.bmp"
             
-            # 2. INVERTIR MÁSCARA (Pieza = BLANCO, Fondo = NEGRO) -> ¡El paso que faltaba!
-            $IMG_TOOL "temp_mask_$id.bmp" -negate "temp_mask_$id.bmp"
+            # B) Multiplicar la imagen a color con la máscara. 
+            # El fondo se vuelve Negro puro. La pieza conserva su color real.
+            $IMG_TOOL "temp_reduced_colors.png" "temp_mask_$id.bmp" -compose Multiply -composite "temp_color_$id.png"
 
-            # 3. Aplicar máscara: el negro se vuelve transparente, el blanco muestra el color de la foto
-            $IMG_TOOL "temp_reduced_colors.png" "temp_mask_$id.bmp" -compose CopyOpacity -composite "temp_color_$id.png"
-
-            # 4. Encontrar color ignorando el fondo
-            DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#00000000|#FFFFFF|#FDFDFD|#FEFEFE|#F0F0F0' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
+            # C) Buscar el color predominante, ignorando el negro absoluto que acabamos de crear
+            DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -iE '#[0-9a-fA-F]{6}' | grep -ivE '#000000|#00000000|none' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
             
+            # Si la pieza originalmente era negra, el escáner dará vacío. Le devolvemos el negro.
             if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
             
             echo "      - Isla $id -> Color detectado: $DOMINANT_COLOR"
@@ -74,13 +80,14 @@ for img in "${FILES[@]}"; do
             ids_to_keep="${COLOR_GROUPS[$hex_color]}"
             ids_csv=$(echo $ids_to_keep | xargs | tr ' ' ',')
             
+            # Aislar todas las islas que comparten este color en un solo mapa
             $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$ids_csv" -connected-components 4 "temp_group_${counter}.bmp"
             
+            # Vectorizar (esto respeta todos los huecos)
             potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
             
+            # Extraer y aplanar para Canva (sin usar grupos)
             FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
-            
-            # USO DE grep -m 1 PARA EVITAR BROKEN PIPE Y OBTENER UN PATH PLANO PARA CANVA
             PATH_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'd="[^"]*"' || true)
             TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'transform="[^"]*"' || true)
 
