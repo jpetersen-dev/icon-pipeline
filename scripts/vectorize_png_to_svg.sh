@@ -40,13 +40,9 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Analizando topología y aislando huecos..."
     CC_OUTPUT=$($IMG_TOOL "temp_binary.bmp" -define connected-components:verbose=true -define connected-components:area-threshold=10 -connected-components 4 null: | tr -d '\r')
     
-    # LA MAGIA INFALIBLE: Identificar las piezas por diferencia con el fondo, no por nombre de color.
+    # Identificar fondo, huecos y piezas
     BG_COLOR_RAW=$(echo "$CC_OUTPUT" | tail -n +2 | head -n 1 | awk '{print $NF}')
-    
-    # Huecos = Todo lo que tenga el mismo color que el fondo
     WHITE_CSV=$(echo "$CC_OUTPUT" | tail -n +2 | awk -v bgc="$BG_COLOR_RAW" '{if ($NF == bgc) print $1}' | sed 's/://' | xargs | tr ' ' ',')
-    
-    # Piezas = Todo lo que tenga un color diferente al fondo
     BLACK_IDS=$(echo "$CC_OUTPUT" | tail -n +2 | awk -v bgc="$BG_COLOR_RAW" '{if ($NF != bgc) print $1}' | sed 's/://')
 
     if [ -z "$BLACK_IDS" ]; then
@@ -57,15 +53,16 @@ for img in "${FILES[@]}"; do
         declare -A COLOR_GROUPS
         
         for id in $BLACK_IDS; do
-            # Aislar la pieza manteniendo los blancos (garantía de huecos)
             KEEP_ALL="${id},${WHITE_CSV}"
-            $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_mask_$id.bmp"
+            KEEP_ALL=$(echo "$KEEP_ALL" | sed 's/,$//' | sed 's/^,//') # Limpieza por si acaso
+            
+            # EL ARREGLO ESTELAR: mean-color=true OBLIGATORIO
+            $IMG_TOOL "temp_binary.bmp" -define connected-components:mean-color=true -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_mask_$id.bmp"
             
             # Invertir y Multiplicar para obtener el color puro
             $IMG_TOOL "temp_mask_$id.bmp" -negate "temp_mask_inv_$id.bmp"
             $IMG_TOOL "temp_reduced_colors.png" "temp_mask_inv_$id.bmp" -compose Multiply -composite "temp_color_$id.png"
 
-            # Encontrar el color, ignorando el fondo negro que creamos
             DOMINANT_COLOR=$($IMG_TOOL "temp_color_$id.png" -format "%c" histogram:info: | grep -ivE 'none|#000000|#00000000' | sort -nr | head -n 1 | grep -m 1 -oE '#[0-9a-fA-F]{6}' || true)
             
             if [ -z "$DOMINANT_COLOR" ]; then DOMINANT_COLOR="#000000"; fi
@@ -80,7 +77,7 @@ for img in "${FILES[@]}"; do
         echo "    [Debug] Colores únicos detectados: $num_colors"
         echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
         
-        # SI LA IMAGEN ES MONOCROMÁTICA (Separar piezas geométricas para Canva)
+        # SI LA IMAGEN ES MONOCROMÁTICA
         if [ "$num_colors" -eq 1 ]; then
             echo "    [Debug] Logo monocromático detectado. Separando geométricamente (Modo Canva)..."
             COLORS=("#33CCFF" "#FF3366" "#33FF66" "#CC33FF" "#00FFFF")
@@ -90,8 +87,10 @@ for img in "${FILES[@]}"; do
             for id in $BLACK_IDS; do
                 CURRENT_COLOR="${COLORS[$color_index % ${#COLORS[@]}]}"
                 KEEP_ALL="${id},${WHITE_CSV}"
+                KEEP_ALL=$(echo "$KEEP_ALL" | sed 's/,$//' | sed 's/^,//')
                 
-                $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
+                # EL ARREGLO ESTELAR AQUÍ TAMBIÉN
+                $IMG_TOOL "temp_binary.bmp" -define connected-components:mean-color=true -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
                 potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
                 
                 FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
@@ -107,7 +106,7 @@ for img in "${FILES[@]}"; do
                 color_index=$((color_index + 1))
             done
             
-        # SI LA IMAGEN ES COLORIDA (Agrupar por color real detectado)
+        # SI LA IMAGEN ES COLORIDA
         else
             echo "    [Debug] Logo colorido detectado. Agrupando por color real..."
             counter=1
@@ -116,8 +115,10 @@ for img in "${FILES[@]}"; do
                 ids_csv=$(echo $ids_to_keep | xargs | tr ' ' ',')
                 
                 KEEP_ALL="${ids_csv},${WHITE_CSV}"
+                KEEP_ALL=$(echo "$KEEP_ALL" | sed 's/,$//' | sed 's/^,//')
                 
-                $IMG_TOOL "temp_binary.bmp" -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
+                # EL ARREGLO ESTELAR AQUÍ TAMBIÉN
+                $IMG_TOOL "temp_binary.bmp" -define connected-components:mean-color=true -define connected-components:keep="$KEEP_ALL" -connected-components 4 "temp_group_${counter}.bmp"
                 potrace "temp_group_${counter}.bmp" -s -o "temp_group_${counter}.svg"
                 
                 FLAT_SVG=$(tr '\n' ' ' < "temp_group_${counter}.svg")
@@ -139,12 +140,13 @@ for img in "${FILES[@]}"; do
     echo "    [Debug] Optimizando SVG..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
-  # --- OTROS MODOS ---
+  # --- MODO COLOR PLANO ---
   elif [[ "$name" == *"_color"* ]]; then
      target_png="output/design/${name}_transparent.png"
      BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
      $IMG_TOOL "$img" -alpha set -fuzz 20% -fill none -draw "color 0,0 floodfill" -fuzz 20% -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" -fuzz 10% -transparent white -fuzz 10% -transparent "$BG_COLOR" -channel A -morphology Erode Disk:1.2 +channel -shave 1x1 -trim +repage "$target_png"
 
+  # --- MODO ESTÁNDAR ---
   else
     target_svg="output/design/${name}.svg"
     $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
