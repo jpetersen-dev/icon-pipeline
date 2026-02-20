@@ -30,16 +30,20 @@ for img in "${FILES[@]}"; do
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
     echo "  -> Nueva Estrategia: Separación por canales de color puro..."
     
-    # 1. Aplanar, suavizar ligeramente y reducir la paleta a max 6 colores.
-    # Esto mata el "antialiasing" (los bordes borrosos) y hace que los colores sean sólidos.
+    # 1. Aplanar y reducir paleta
     $IMG_TOOL "$img" -background white -alpha remove -colorspace sRGB -blur 0x0.3 +dither -colors 6 -normalize "temp_quantized.png"
     
-    # 2. Obtener el color del fondo de la esquina superior izquierda
-    BG_COLOR=$($IMG_TOOL "temp_quantized.png" -format "%[pixel:p{0,0}]" info: | grep -oE '#[0-9a-fA-F]{6}' || echo "#FFFFFF")
+    # 2. Obtenemos el HEX exacto del fondo (mirando el píxel de la esquina superior izquierda)
+    BG_HEX=$($IMG_TOOL "temp_quantized.png" -format "%[hex:p{0,0}]" info: | head -n 1 | cut -c 1-6)
+    BG_COLOR="#${BG_HEX}"
+    echo "    [Debug] Fondo detectado y neutralizado: $BG_COLOR"
     
-    # 3. Detectar todos los colores en la imagen, ignorando el fondo y el blanco/gris claro.
-    echo "    [Debug] Extrayendo paleta de colores reales..."
-    COLORS=$($IMG_TOOL "temp_quantized.png" -format "%c" histogram:info: | grep -ivE "$BG_COLOR|#FFFFFF|#FDFDFD|#FEFEFE|none" | sort -nr | head -n 5 | grep -oE '#[0-9a-fA-F]{6}' || true)
+    # 3. Extraemos el histograma. 
+    # Ordenamos de mayor a menor uso.
+    # Ignoramos el color de fondo exacto y blancos puros.
+    # Tomamos SOLO los 2 colores más abundantes (esto elimina el blanco sucio y los artefactos grises).
+    echo "    [Debug] Extrayendo los 2 colores principales..."
+    COLORS=$($IMG_TOOL "temp_quantized.png" -format "%c" histogram:info: | grep -iE '#[0-9A-Fa-f]{6}' | grep -ivE "$BG_COLOR|#FFFFFF|#FDFDFD|#FEFEFE|#FEFFFD|none" | sort -nr | head -n 2 | grep -oE '#[0-9A-Fa-f]{6}' || true)
     
     if [ -z "$COLORS" ]; then
         echo "    [Aviso] No se detectaron colores. Procesando como monocromático."
@@ -51,21 +55,17 @@ for img in "${FILES[@]}"; do
     
     counter=1
     for hex_color in $COLORS; do
-        echo "      - Vectorizando capa para el color: $hex_color"
+        echo "      - Vectorizando capa pura para el color: $hex_color"
         
-        # EL SECRETO PARA LOS HUECOS PERFECTOS:
         # Seleccionamos nuestro color objetivo y lo pintamos de NEGRO.
-        # Pintamos el resto del universo (fondo, otros colores, huecos) de BLANCO.
+        # Pintamos el resto (fondo y el otro color) de BLANCO. Potrace recorta todo lo blanco.
         $IMG_TOOL "temp_quantized.png" -fuzz 2% -fill black -opaque "$hex_color" -fuzz 0% -fill white +opaque black -morphology Close Disk:1 "temp_layer.bmp"
         
-        # Potrace vectoriza lo negro. ¡Al ser los huecos blancos, Potrace los recorta automáticamente!
         potrace "temp_layer.bmp" -s -o "temp_layer.svg"
         
-        # Extraer los datos de la ruta
         FLAT_SVG=$(tr '\n' ' ' < "temp_layer.svg")
         TRANSFORM_DATA=$(echo "$FLAT_SVG" | grep -m 1 -o 'transform="[^"]*"' || true)
         
-        # Extraemos todos los trazados que Potrace haya encontrado para este color
         echo "$FLAT_SVG" | grep -o 'd="[^"]*"' > "temp_paths.txt" || true
         
         path_count=1
