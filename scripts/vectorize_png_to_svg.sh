@@ -16,6 +16,7 @@ if [ ${#FILES[@]} -eq 0 ]; then exit 0; fi
 for img in "${FILES[@]}"; do
   filename=$(basename -- "$img")
   name="${filename%.*}"
+  ext="${filename##*.}"
   echo "----------------------------------------"
   echo "Procesando: $filename"
   
@@ -67,13 +68,25 @@ for img in "${FILES[@]}"; do
     svgo "$target_svg" --multipass --output "$target_svg"
 
   # =====================================================================================
+  # MODO ENHANCE (Mejorador de Fotos con IA Matemática)
+  # =====================================================================================
+  elif [[ "$name" == *"_enhance"* ]]; then
+    echo "  -> Modo Enhance: Escalado Lanczos, limpieza de ruido y nitidez..."
+    target_img="output/design/${name}_enhanced.${ext}"
+    
+    $IMG_TOOL "$img" \
+      -filter Lanczos -resize 200% \
+      -enhance -noise 2 \
+      -unsharp 0x1.5+1.5+0.02 \
+      -modulate 105,110 \
+      -quality 95 "$target_img"
+
+  # =====================================================================================
   # MODO COLOR PLANO (Limpieza de Fondo en Raster - PNG)
   # =====================================================================================
   elif [[ "$name" == *"_color"* ]]; then
      echo "  -> Modo Color: Limpieza de fondo transparente..."
      target_png="output/design/${name}_transparent.png"
-     
-     # MÉTODO SEGURO: Obtiene el color exacto de la esquina superior izquierda y lo vuelve transparente
      CORNER_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info: | head -n 1)
      $IMG_TOOL "$img" -alpha set -fuzz 15% -transparent "$CORNER_COLOR" -trim +repage "$target_png"
 
@@ -83,8 +96,6 @@ for img in "${FILES[@]}"; do
   else
     echo "  -> Modo Estándar: Vectorización monocromática..."
     target_svg="output/design/${name}.svg"
-    
-    # MÉTODO SEGURO: Usamos el color de la esquina para unificar el fondo a blanco
     CORNER_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info: | head -n 1)
     $IMG_TOOL "$img" -fuzz 20% -fill white -opaque "$CORNER_COLOR" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
     $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
