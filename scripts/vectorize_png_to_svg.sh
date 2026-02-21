@@ -26,16 +26,26 @@ for img in "${FILES[@]}"; do
   target_svg="output/design/${name}.svg"
 
   # =====================================================================================
-  # MODO MULTICOLOR / LAYERS (SVG Separado por Canales para Canva)
+  # MODO MULTICOLOR DINÁMICO (Soporta _layers, _multicolor, o _color1 hasta _color8)
   # =====================================================================================
-  if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
-    echo "  -> Modo Multicolor: Separación por canales de color puro..."
+  if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* || "$name" =~ _color([1-8]) ]]; then
     
-    $IMG_TOOL "$img" -background white -alpha remove -colorspace sRGB -blur 0x0.3 +dither -colors 6 -normalize "temp_quantized.png"
+    # Extraemos el número dinámicamente si se usó el formato _colorX
+    if [[ "$name" =~ _color([1-8]) ]]; then
+        MAX_COLORS="${BASH_REMATCH[1]}"
+    else
+        MAX_COLORS=5 # Límite por defecto si solo se usa _layers o _multicolor
+    fi
+    
+    echo "  -> Modo Multicolor: Separación por canales ($MAX_COLORS colores)..."
+    
+    # Ampliamos la paleta inicial a 16 colores para no perder tonos sutiles antes del filtrado
+    $IMG_TOOL "$img" -background white -alpha remove -colorspace sRGB -blur 0x0.3 +dither -colors 16 -normalize "temp_quantized.png"
     BG_HEX=$($IMG_TOOL "temp_quantized.png" -format "%[hex:p{0,0}]" info: | head -n 1 | cut -c 1-6)
     BG_COLOR="#${BG_HEX}"
     
-    COLORS=$($IMG_TOOL "temp_quantized.png" -format "%c" histogram:info: | grep -iE '#[0-9A-Fa-f]{6}' | grep -ivE "$BG_COLOR|#FFFFFF|#FDFDFD|#FEFEFE|#FEFFFD|none" | sort -nr | head -n 2 | grep -oE '#[0-9A-Fa-f]{6}' || true)
+    # El 'head -n $MAX_COLORS' es la barrera dinámica
+    COLORS=$($IMG_TOOL "temp_quantized.png" -format "%c" histogram:info: | grep -iE '#[0-9A-Fa-f]{6}' | grep -ivE "$BG_COLOR|#FFFFFF|#FDFDFD|#FEFEFE|#FEFFFD|none" | sort -nr | head -n $MAX_COLORS | grep -oE '#[0-9A-Fa-f]{6}' || true)
     
     if [ -z "$COLORS" ]; then COLORS="#000000"; $IMG_TOOL "temp_quantized.png" -threshold 50% "temp_quantized.png"; fi
 
@@ -43,6 +53,7 @@ for img in "${FILES[@]}"; do
     
     counter=1
     for hex_color in $COLORS; do
+        echo "      - Vectorizando capa pura para el color: $hex_color"
         $IMG_TOOL "temp_quantized.png" -fuzz 2% -fill black -opaque "$hex_color" -fuzz 0% -fill white +opaque black -morphology Close Disk:1 "temp_layer.bmp"
         
         potrace "temp_layer.bmp" -s -o "temp_layer.svg"
@@ -68,21 +79,28 @@ for img in "${FILES[@]}"; do
     svgo "$target_svg" --multipass --output "$target_svg"
 
   # =====================================================================================
+  # MODO TEXTURA / SOMBRAS (Tramado de Semitonos Vectorial)
+  # =====================================================================================
+  elif [[ "$name" == *"_texture"* ]]; then
+    echo "  -> Modo Textura: Tramado de semitonos (Halftone Dithering)..."
+    target_svg="output/design/${name}.svg"
+    
+    # Convierte degradados en patrones de puntos perfectos para vectorizar
+    $IMG_TOOL "$img" -background white -alpha remove -colorspace Gray -ordered-dither o8x8 "${name}_texture.bmp"
+    potrace "${name}_texture.bmp" -s -o "$target_svg"
+    rm -f "${name}_texture.bmp"
+
+  # =====================================================================================
   # MODO ENHANCE (Mejorador de Fotos con IA Matemática)
   # =====================================================================================
   elif [[ "$name" == *"_enhance"* ]]; then
     echo "  -> Modo Enhance: Escalado Lanczos, limpieza de ruido y nitidez..."
     target_img="output/design/${name}_enhanced.${ext}"
     
-    $IMG_TOOL "$img" \
-      -filter Lanczos -resize 200% \
-      -enhance -noise 2 \
-      -unsharp 0x1.5+1.5+0.02 \
-      -modulate 105,110 \
-      -quality 95 "$target_img"
+    $IMG_TOOL "$img" -filter Lanczos -resize 200% -enhance -noise 2 -unsharp 0x1.5+1.5+0.02 -modulate 105,110 -quality 95 "$target_img"
 
   # =====================================================================================
-  # MODO COLOR PLANO (Limpieza de Fondo en Raster - PNG)
+  # MODO COLOR PLANO (Limpieza de Fondo Raster - PNG)
   # =====================================================================================
   elif [[ "$name" == *"_color"* ]]; then
      echo "  -> Modo Color: Limpieza de fondo transparente..."
@@ -91,10 +109,10 @@ for img in "${FILES[@]}"; do
      $IMG_TOOL "$img" -alpha set -fuzz 15% -transparent "$CORNER_COLOR" -trim +repage "$target_png"
 
   # =====================================================================================
-  # MODO ESTÁNDAR (Blanco y Negro Vectorial Clásico)
+  # MODO ESTÁNDAR (Blanco y Negro Vectorial Clásico - Siluetas)
   # =====================================================================================
   else
-    echo "  -> Modo Estándar: Vectorización monocromática..."
+    echo "  -> Modo Estándar: Vectorización monocromática de alto contraste..."
     target_svg="output/design/${name}.svg"
     CORNER_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info: | head -n 1)
     $IMG_TOOL "$img" -fuzz 20% -fill white -opaque "$CORNER_COLOR" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
