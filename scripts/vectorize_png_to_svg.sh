@@ -25,40 +25,23 @@ for img in "${FILES[@]}"; do
   target_svg="output/design/${name}.svg"
 
   # =====================================================================================
-  # NUEVA ESTRATEGIA: SEPARACIÓN POR CANALES DE COLOR (Tipo Serigrafía)
+  # MODO MULTICOLOR / LAYERS (SVG Separado por Canales para Canva)
   # =====================================================================================
   if [[ "$name" == *"_layers"* || "$name" == *"_multicolor"* ]]; then
-    echo "  -> Nueva Estrategia: Separación por canales de color puro..."
+    echo "  -> Modo Multicolor: Separación por canales de color puro..."
     
-    # 1. Aplanar y reducir paleta
     $IMG_TOOL "$img" -background white -alpha remove -colorspace sRGB -blur 0x0.3 +dither -colors 6 -normalize "temp_quantized.png"
-    
-    # 2. Obtenemos el HEX exacto del fondo (mirando el píxel de la esquina superior izquierda)
     BG_HEX=$($IMG_TOOL "temp_quantized.png" -format "%[hex:p{0,0}]" info: | head -n 1 | cut -c 1-6)
     BG_COLOR="#${BG_HEX}"
-    echo "    [Debug] Fondo detectado y neutralizado: $BG_COLOR"
     
-    # 3. Extraemos el histograma. 
-    # Ordenamos de mayor a menor uso.
-    # Ignoramos el color de fondo exacto y blancos puros.
-    # Tomamos SOLO los 2 colores más abundantes (esto elimina el blanco sucio y los artefactos grises).
-    echo "    [Debug] Extrayendo los 2 colores principales..."
     COLORS=$($IMG_TOOL "temp_quantized.png" -format "%c" histogram:info: | grep -iE '#[0-9A-Fa-f]{6}' | grep -ivE "$BG_COLOR|#FFFFFF|#FDFDFD|#FEFEFE|#FEFFFD|none" | sort -nr | head -n 2 | grep -oE '#[0-9A-Fa-f]{6}' || true)
     
-    if [ -z "$COLORS" ]; then
-        echo "    [Aviso] No se detectaron colores. Procesando como monocromático."
-        COLORS="#000000"
-        $IMG_TOOL "temp_quantized.png" -threshold 50% "temp_quantized.png"
-    fi
+    if [ -z "$COLORS" ]; then COLORS="#000000"; $IMG_TOOL "temp_quantized.png" -threshold 50% "temp_quantized.png"; fi
 
     echo "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 $WIDTH $HEIGHT\">" > "$target_svg"
     
     counter=1
     for hex_color in $COLORS; do
-        echo "      - Vectorizando capa pura para el color: $hex_color"
-        
-        # Seleccionamos nuestro color objetivo y lo pintamos de NEGRO.
-        # Pintamos el resto (fondo y el otro color) de BLANCO. Potrace recorta todo lo blanco.
         $IMG_TOOL "temp_quantized.png" -fuzz 2% -fill black -opaque "$hex_color" -fuzz 0% -fill white +opaque black -morphology Close Disk:1 "temp_layer.bmp"
         
         potrace "temp_layer.bmp" -s -o "temp_layer.svg"
@@ -80,28 +63,43 @@ for img in "${FILES[@]}"; do
         counter=$((counter + 1))
     done
     echo "</svg>" >> "$target_svg"
-    
     rm -f "temp_quantized.png"
-    echo "    [Debug] Optimizando SVG..."
     svgo "$target_svg" --multipass --output "$target_svg"
 
-  # --- MODO COLOR PLANO ---
+  # =====================================================================================
+  # MODO COLOR PLANO (Limpieza de Fondo en Raster - PNG)
+  # =====================================================================================
   elif [[ "$name" == *"_color"* ]]; then
+     echo "  -> Modo Color: Limpieza de fondo transparente..."
      target_png="output/design/${name}_transparent.png"
-     BG_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info:)
-     $IMG_TOOL "$img" -alpha set -fuzz 20% -fill none -draw "color 0,0 floodfill" -fuzz 20% -fill none -draw "color $CENTER_X,$CENTER_Y floodfill" -fuzz 10% -transparent white -fuzz 10% -transparent "$BG_COLOR" -channel A -morphology Erode Disk:1.2 +channel -shave 1x1 -trim +repage "$target_png"
+     
+     # MÉTODO SEGURO: Obtiene el color exacto de la esquina superior izquierda y lo vuelve transparente
+     CORNER_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info: | head -n 1)
+     $IMG_TOOL "$img" -alpha set -fuzz 15% -transparent "$CORNER_COLOR" -trim +repage "$target_png"
 
-  # --- MODO ESTÁNDAR ---
+  # =====================================================================================
+  # MODO ESTÁNDAR (Blanco y Negro Vectorial Clásico)
+  # =====================================================================================
   else
+    echo "  -> Modo Estándar: Vectorización monocromática..."
     target_svg="output/design/${name}.svg"
-    $IMG_TOOL "$img" -fuzz 20% -fill white -draw "color 0,0 floodfill" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
+    
+    # MÉTODO SEGURO: Usamos el color de la esquina para unificar el fondo a blanco
+    CORNER_COLOR=$($IMG_TOOL "$img" -format "%[pixel:p{0,0}]" info: | head -n 1)
+    $IMG_TOOL "$img" -fuzz 20% -fill white -opaque "$CORNER_COLOR" -colorspace Gray -threshold 55% -morphology Close Disk:1 "${name}_bn.png"
     $IMG_TOOL "${name}_bn.png" -background white -alpha remove "${name}.bmp"
     potrace "${name}.bmp" -s -o "$target_svg"
-    if [[ "$name" == *"_hole"* ]]; then rsvg-convert -f pdf -o "output/design/${name}_frame.pdf" "$target_svg"; fi
+    
+    if [[ "$name" == *"_hole"* ]]; then 
+        echo "    [Debug] Generando PDF de corte (_hole)..."
+        rsvg-convert -f pdf -o "output/design/${name}_frame.pdf" "$target_svg"
+    fi
     rm -f "${name}_bn.png" "${name}.bmp"
   fi
 
+  # Optimizador Web
   if [[ "$name" == *"_web"* && -f "output/design/${name}.svg" ]]; then
+    echo "    [Debug] Generando versión web comprimida..."
     svgo "output/design/${name}.svg" --multipass --output "output/web/${name}.min.svg"
   fi
 
