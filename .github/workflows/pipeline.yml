@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'input/png/**'
+      - 'input/svg/**'
       - 'scripts/**'
       - '.github/workflows/**'
   workflow_dispatch:
